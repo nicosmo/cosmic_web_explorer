@@ -1,0 +1,2982 @@
+﻿<!--
+Cosmic Web Explorer
+A real-time cosmological visualization tool.
+Copyright (c) 2026 Nico Schuster. Licensed under the GNU AGPLv3.
+
+This tool is shared for educational and research purposes. It is provided
+"as-is," without any warranty of any kind.
+ For full license terms and citation instructions, please visit:
+https://github.com/nicosmo/cosmic_web_explorer
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmic Web Explorer</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/d3-delaunay@6"></script>
+    <script src="src/constants.js"></script>
+    <script src="src/cosmology.js"></script>
+    <script src="src/webgl-utils.js"></script>
+    <script src="src/gpu-gravity.js"></script>
+    <script src="src/gpu-correlation.js"></script>
+    <script src="src/color-luts.js"></script>
+    <script src="src/bao-forces.js"></script>
+    <script src="src/pert2lpt.js"></script>
+    <script src="src/transfer-function.js"></script>
+    <script src="src/sim-physics.js"></script>
+    <script src="src/sim-renderer.js"></script>
+    <script src="src/icons.js"></script>
+    <script src="src/ui-components.js"></script>
+    <script>document.write('<scr'+'ipt src="src/recorder.js?t='+Date.now()+'"><\/scr'+'ipt>')</script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+        const workerCode = `
+            importScripts("https://unpkg.com/d3-delaunay@6");
+
+            self.onmessage = function(e) {
+                const { physX, physY, N, width, height, showVoids, voidThreshold, minVoidRadiusPx } = e.data;
+
+                if (!physX || N === 0) return;
+
+                const meanSpacing = Math.sqrt(width * height / N);
+                const bufferX = Math.min(width * 0.15, meanSpacing * 25);
+                const bufferY = Math.min(height * 0.15, meanSpacing * 25);
+                const allPoints = [];
+                const ghostToReal = new Map();
+
+                // Real particles
+                for (let i = 0; i < N; i++) allPoints.push([physX[i], physY[i]]);
+
+                // Ghost particles for periodic boundaries
+                for (let i = 0; i < N; i++) {
+                    const x = physX[i], y = physY[i];
+                    const nearL = x < bufferX, nearR = x > width - bufferX;
+                    const nearT = y < bufferY, nearB = y > height - bufferY;
+                    if (nearL) { ghostToReal.set(allPoints.length, i); allPoints.push([x + width, y]); }
+                    if (nearR) { ghostToReal.set(allPoints.length, i); allPoints.push([x - width, y]); }
+                    if (nearT) { ghostToReal.set(allPoints.length, i); allPoints.push([x, y + height]); }
+                    if (nearB) { ghostToReal.set(allPoints.length, i); allPoints.push([x, y - height]); }
+                    if (nearL && nearT) { ghostToReal.set(allPoints.length, i); allPoints.push([x + width, y + height]); }
+                    if (nearL && nearB) { ghostToReal.set(allPoints.length, i); allPoints.push([x + width, y - height]); }
+                    if (nearR && nearT) { ghostToReal.set(allPoints.length, i); allPoints.push([x - width, y + height]); }
+                    if (nearR && nearB) { ghostToReal.set(allPoints.length, i); allPoints.push([x - width, y - height]); }
+                }
+
+                const delaunay = d3.Delaunay.from(allPoints);
+                const voronoi = delaunay.voronoi([-bufferX, -bufferY, width + bufferX, height + bufferY]);
+
+                const cellAreas = new Float32Array(N);
+                const meanArea = (width * height) / N;
+
+                // Only send polygons if N is manageable (at high N, cells are too small to see)
+                const skipPolygons = N > 250000;
+                const polygons = [];
+
+                for (let i = 0; i < N; i++) {
+                    const cell = voronoi.cellPolygon(i);
+                    if (!skipPolygons) polygons.push(cell || []);
+
+                    if (cell) {
+                        let area = 0;
+                        for (let j = 0; j < cell.length - 1; j++) {
+                            area += cell[j][0] * cell[j + 1][1] - cell[j + 1][0] * cell[j][1];
+                        }
+                        cellAreas[i] = Math.abs(area) / 2;
+                    } else {
+                        cellAreas[i] = meanArea;
+                    }
+                }
+
+                const densities = new Float32Array(N);
+                for (let i = 0; i < N; i++) densities[i] = meanArea / cellAreas[i];
+
+                let voidResults = null;
+                const boundarySegments = [];
+                const ghostPolygons = []; // Store ghost cells visible on screen
+
+                if (showVoids) {
+                    // --- GHOST CELL EXTRACTION (skip at high N — cells too small to draw) ---
+                    if (!skipPolygons) {
+                        for (let i = N; i < allPoints.length; i++) {
+                            const cell = voronoi.cellPolygon(i);
+                            if (!cell) continue;
+                            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                            for(const [x,y] of cell) {
+                                if(x < minX) minX = x;
+                                if(x > maxX) maxX = x;
+                                if(y < minY) minY = y;
+                                if(y > maxY) maxY = y;
+                            }
+                            if (maxX >= 0 && minX <= width && maxY >= 0 && minY <= height) {
+                                const realI = ghostToReal.get(i);
+                                ghostPolygons.push({
+                                    poly: cell,
+                                    id: realI
+                                });
+                            }
+                        }
+                    }
+
+                    const neighbors = Array.from({ length: N }, () => new Set());
+                    for (let i = 0; i < N; i++) {
+                        for (const j of delaunay.neighbors(i)) {
+                            const realJ = j >= N ? ghostToReal.get(j) : j;
+                            if (realJ !== undefined && realJ < N && realJ !== i) {
+                                neighbors[i].add(realJ);
+                                neighbors[realJ].add(i);
+                            }
+                        }
+                    }
+
+                    // --- VOID FINDING ---
+                    const isLocalMinimum = new Array(N).fill(false);
+                    for (let i = 0; i < N; i++) {
+                        let isMin = true;
+                        for (const neighborIdx of neighbors[i]) {
+                            if (densities[neighborIdx] <= densities[i]) {
+                                isMin = false;
+                                break;
+                            }
+                        }
+                        isLocalMinimum[i] = isMin;
+                    }
+
+                    const allCells = [];
+                    for (let i = 0; i < N; i++) {
+                        allCells.push({ index: i, density: densities[i] });
+                    }
+                    allCells.sort((a, b) => a.density - b.density);
+
+                    const voidIDs = new Int32Array(N).fill(-1);
+                    let currentVoidID = 0;
+
+                    for (let i = 0; i < N; i++) {
+                        if (isLocalMinimum[i]) {
+                            currentVoidID++;
+                            voidIDs[i] = currentVoidID;
+                        }
+                    }
+
+                    for (const { index: cellIdx } of allCells) {
+                        if (voidIDs[cellIdx] !== -1) continue;
+                        let bestNeighbor = -1;
+                        let bestNeighborDensity = Infinity;
+                        for (const neighborIdx of neighbors[cellIdx]) {
+                            if (voidIDs[neighborIdx] !== -1 && densities[neighborIdx] < bestNeighborDensity) {
+                                bestNeighborDensity = densities[neighborIdx];
+                                bestNeighbor = neighborIdx;
+                            }
+                        }
+                        if (bestNeighbor !== -1 && densities[bestNeighbor] <= densities[cellIdx]) {
+                            voidIDs[cellIdx] = voidIDs[bestNeighbor];
+                        }
+                    }
+
+                    // BFS second pass: propagate into remaining unassigned cells
+                    // (handles equal-density plateaus missed by single-pass watershed)
+                    const frontier = [];
+                    for (let i = 0; i < N; i++) {
+                        if (voidIDs[i] !== -1) {
+                            for (const nIdx of neighbors[i]) {
+                                if (voidIDs[nIdx] === -1) { frontier.push(i); break; }
+                            }
+                        }
+                    }
+                    let fi = 0;
+                    while (fi < frontier.length) {
+                        const src = frontier[fi++];
+                        const vid = voidIDs[src];
+                        for (const nIdx of neighbors[src]) {
+                            if (voidIDs[nIdx] === -1) {
+                                voidIDs[nIdx] = vid;
+                                frontier.push(nIdx);
+                            }
+                        }
+                    }
+
+                    // --- MERGING ---
+                    const parent = new Int32Array(currentVoidID + 1);
+                    for(let i=0; i<=currentVoidID; i++) parent[i] = i;
+
+                    const find = (i) => {
+                        while (i !== parent[i]) {
+                            parent[i] = parent[parent[i]];
+                            i = parent[i];
+                        }
+                        return i;
+                    };
+
+                    const union = (i, j) => {
+                        const rootI = find(i);
+                        const rootJ = find(j);
+                        if (rootI !== rootJ) parent[rootI] = rootJ;
+                    };
+
+                    // VOID MERGING PARAMETERS (see void-worker.js for detailed explanations):
+                    const wallDensityThreshold = 1.0;
+                    const minAbsoluteHoleSize = 3.;
+                    const minRelativeHoleSize = 0.2;
+
+                    const edgeStats = new Map();
+
+                    for (let i = 0; i < N; i++) {
+                        const idA = voidIDs[i];
+                        if (idA === -1) continue;
+
+                        for (const nIdx of neighbors[i]) {
+                            const idB = voidIDs[nIdx];
+                            if (idB !== -1 && idB !== idA && i < nIdx) {
+                                const minID = idA < idB ? idA : idB;
+                                const maxID = idA > idB ? idA : idB;
+                                const key = minID + "_" + maxID;
+
+                                if (!edgeStats.has(key)) edgeStats.set(key, { open: 0, total: 0 });
+                                const stats = edgeStats.get(key);
+
+                                stats.total++;
+                                if (densities[i] < wallDensityThreshold && densities[nIdx] < wallDensityThreshold) {
+                                    stats.open++;
+                                }
+                            }
+                        }
+                    }
+
+                    for (const [key, stats] of edgeStats) {
+                        if (stats.open > minAbsoluteHoleSize && (stats.open / stats.total) > minRelativeHoleSize) {
+                            const [sA, sB] = key.split('_');
+                            union(parseInt(sA), parseInt(sB));
+                        }
+                    }
+
+                    if (minVoidRadiusPx > 0) {
+                        let iterations = 0;
+                        let somethingMerged = true;
+
+                        while (somethingMerged && iterations < 50) {
+                            somethingMerged = false;
+                            iterations++;
+
+                            const rootAreas = new Float32Array(currentVoidID + 1).fill(0);
+                            for (let i = 0; i < N; i++) {
+                                if (voidIDs[i] !== -1) {
+                                    rootAreas[find(voidIDs[i])] += cellAreas[i];
+                                }
+                            }
+
+                            const isSmall = new Int8Array(currentVoidID + 1).fill(0);
+                            let smallCount = 0;
+                            for (let i = 1; i <= currentVoidID; i++) {
+                                if (parent[i] === i) {
+                                    const radius = Math.sqrt(rootAreas[i] / Math.PI);
+                                    if (radius < minVoidRadiusPx) {
+                                        isSmall[i] = 1;
+                                        smallCount++;
+                                    }
+                                }
+                            }
+
+                            if (smallCount === 0) break;
+
+                            const smallVoidAdjacency = new Map();
+
+                            for (let i = 0; i < N; i++) {
+                                const id = voidIDs[i];
+                                if (id === -1) continue;
+                                const root = find(id);
+
+                                if (isSmall[root] === 1) {
+                                    if (!smallVoidAdjacency.has(root)) smallVoidAdjacency.set(root, new Map());
+                                    const neighborsMap = smallVoidAdjacency.get(root);
+
+                                    for (const nIdx of neighbors[i]) {
+                                        const nId = voidIDs[nIdx];
+                                        if (nId !== -1) {
+                                            const nRoot = find(nId);
+                                            if (nRoot !== root) {
+                                                neighborsMap.set(nRoot, (neighborsMap.get(nRoot) || 0) + 1);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            for (const [root, neighborsMap] of smallVoidAdjacency) {
+                                let bestNeighbor = -1;
+                                let maxEdges = -1;
+                                for (const [nRoot, count] of neighborsMap) {
+                                    if (count > maxEdges) {
+                                        maxEdges = count;
+                                        bestNeighbor = nRoot;
+                                    }
+                                }
+                                if (bestNeighbor !== -1) {
+                                    const rootA = find(root);
+                                    const rootB = find(bestNeighbor);
+                                    if (rootA !== rootB) {
+                                        union(rootA, rootB);
+                                        somethingMerged = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    const mapping = new Int32Array(currentVoidID + 1).fill(-1);
+                    let nextID = 0;
+                    for(let i=1; i<=currentVoidID; i++) {
+                        const root = find(i);
+                        if (mapping[root] === -1) {
+                            nextID++;
+                            mapping[root] = nextID;
+                        }
+                        mapping[i] = mapping[root];
+                    }
+
+                    for(let i=0; i<N; i++) {
+                        if(voidIDs[i] !== -1) voidIDs[i] = mapping[voidIDs[i]];
+                    }
+
+                    // --- GENERATE BOUNDARY OUTLINES ---
+                    const { halfedges, triangles } = delaunay;
+
+                    const getVoidID = (idx) => {
+                        if (idx < N) return voidIDs[idx];
+                        const real = ghostToReal.get(idx);
+                        return (real !== undefined) ? voidIDs[real] : -1;
+                    };
+
+                    const getDensity = (idx) => {
+                        if (idx < N) return densities[idx];
+                        const real = ghostToReal.get(idx);
+                        return (real !== undefined) ? densities[real] : Infinity;
+                    }
+
+                    for(let i = 0; i < halfedges.length; i++) {
+                        const j = halfedges[i];
+                        if (j < i) continue;
+
+                        const pA = triangles[i];
+                        const pB = triangles[j];
+
+                        const vA = getVoidID(pA);
+                        const vB = getVoidID(pB);
+
+                        const dA = getDensity(pA);
+                        const dB = getDensity(pB);
+
+                        let isBoundary = false;
+                        if (vA !== vB) {
+                            // Always show boundaries between different void IDs
+                            // regardless of density threshold (Color Cutoff)
+                            const validA = (vA !== -1);
+                            const validB = (vB !== -1);
+                            if (validA || validB) isBoundary = true;
+                        }
+
+                        if (isBoundary) {
+                            const tA = Math.floor(i / 3);
+                            const tB = Math.floor(j / 3);
+
+                            const x1 = voronoi.circumcenters[tA * 2];
+                            const y1 = voronoi.circumcenters[tA * 2 + 1];
+                            const x2 = voronoi.circumcenters[tB * 2];
+                            const y2 = voronoi.circumcenters[tB * 2 + 1];
+
+                            if (Math.abs(x1 - x2) < width/2 && Math.abs(y1 - y2) < height/2) {
+                                boundarySegments.push(x1, y1, x2, y2);
+                            }
+                        }
+                    }
+
+                    // --- PBC-AWARE CENTER CALCULATIONS ---
+                    const k = (2 * Math.PI) / width;
+                    const ky = (2 * Math.PI) / height;
+
+                    const sumSinX = new Float32Array(nextID + 1);
+                    const sumCosX = new Float32Array(nextID + 1);
+                    const sumSinY = new Float32Array(nextID + 1);
+                    const sumCosY = new Float32Array(nextID + 1);
+                    const voidAreas = new Float32Array(nextID + 1);
+
+                    const minDensities = new Float32Array(nextID + 1).fill(Infinity);
+                    const voidMinCenters = new Float32Array((nextID + 1) * 2);
+
+                    for (let i = 0; i < N; i++) {
+                        const vid = voidIDs[i];
+                        if (vid > 0) {
+                            const a = cellAreas[i];
+                            voidAreas[vid] += a;
+
+                            const thetaX = physX[i] * k;
+                            const thetaY = physY[i] * ky;
+
+                            sumSinX[vid] += Math.sin(thetaX) * a;
+                            sumCosX[vid] += Math.cos(thetaX) * a;
+                            sumSinY[vid] += Math.sin(thetaY) * a;
+                            sumCosY[vid] += Math.cos(thetaY) * a;
+
+                            if (densities[i] < minDensities[vid]) {
+                                minDensities[vid] = densities[i];
+                                voidMinCenters[vid*2] = physX[i];
+                                voidMinCenters[vid*2+1] = physY[i];
+                            }
+                        }
+                    }
+
+                    const voidCentroids = new Float32Array((nextID + 1) * 2);
+                    const voidRadii = new Float32Array(nextID + 1);
+
+                    for (let i = 1; i <= nextID; i++) {
+                        if (voidAreas[i] > 0) {
+                            let avgThetaX = Math.atan2(sumSinX[i], sumCosX[i]);
+                            let avgThetaY = Math.atan2(sumSinY[i], sumCosY[i]);
+
+                            if (avgThetaX < 0) avgThetaX += 2 * Math.PI;
+                            if (avgThetaY < 0) avgThetaY += 2 * Math.PI;
+
+                            voidCentroids[i*2] = avgThetaX / k;
+                            voidCentroids[i*2+1] = avgThetaY / ky;
+
+                            voidRadii[i] = Math.sqrt(voidAreas[i] / Math.PI);
+                        }
+                    }
+
+                    voidResults = { voidIDs, numVoids: nextID, voidCentroids, voidMinCenters, voidRadii };
+                }
+
+                self.postMessage({ polygons, densities, voidResults, boundarySegments, ghostPolygons });
+            };
+        `;
+
+        const App = () => {
+            const [numCircles, setNumCircles] = useState(25);
+            const [numTracers, setNumTracers] = useState(50000);
+            const [boxSizeMpc, setBoxSizeMpc] = useState(1000);
+            const [initMode, setInitMode] = useState('bao');  // 'bao' or 'pk'
+
+            // Cosmology State
+            const [cosmoMode, setCosmoMode] = useState('LCDM');
+            const [omegaM, setOmegaM] = useState(DEFAULT_OM);
+            const [omegaL, setOmegaL] = useState(DEFAULT_OL);
+            const [w0, setW0] = useState(DEFAULT_W0);
+            const [wa, setWa] = useState(DEFAULT_WA);
+            const [isFlat, setIsFlat] = useState(true);
+
+            // --- Split-Screen Comparison Mode ---
+            const [splitScreen, setSplitScreen] = useState(false);
+            // Panel B cosmology state (Panel A uses the main cosmology state above)
+            const [cosmoModeB, setCosmoModeB] = useState('LCDM');
+            const [omegaMB, setOmegaMB] = useState(DEFAULT_OM);
+            const [omegaLB, setOmegaLB] = useState(DEFAULT_OL);
+            const [w0B, setW0B] = useState(DEFAULT_W0);
+            const [waB, setWaB] = useState(DEFAULT_WA);
+            const [isFlatB, setIsFlatB] = useState(true);
+
+            const cosmologyLUT = useMemo(() => {
+                return generateCosmologyLUT(omegaM, omegaL, w0, wa);
+            }, [omegaM, omegaL, w0, wa]);
+
+            const cosmologyLUTB = useMemo(() => {
+                if (!splitScreen) return null;
+                return generateCosmologyLUT(omegaMB, omegaLB, w0B, waB);
+            }, [splitScreen, omegaMB, omegaLB, w0B, waB]);
+
+            const [cosmicTime, setCosmicTime] = useState(cosmologyLUT.minTime);
+            const [showTracers, setShowTracers] = useState(true);
+            const [showGas, setShowGas] = useState(false);
+            const [showDensity, setShowDensity] = useState(false);
+            const [showInitialOverlay, setShowInitialOverlay] = useState(false);
+            const [rulerActive, setRulerActive] = useState(false);
+            const [sculptActive, setSculptActive] = useState(false);
+            const [trailPercentage, setTrailPercentage] = useState(0);
+            const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+            const [enableLocalGravity, setEnableLocalGravity] = useState(true);
+            const [useAdhesion, setUseAdhesion] = useState(true);
+            const [isPlaying, setIsPlaying] = useState(false);
+            const [seed, setSeed] = useState(42);
+            const SIDEBAR_W = 64; // collapsed sidebar width (w-16)
+            const [canvasSize, setCanvasSize] = useState({ w: window.innerWidth - SIDEBAR_W, h: window.innerHeight });
+            const [renderTrigger, setRenderTrigger] = useState(0);
+
+            const [authorNames, setAuthorNames] = useState(['Simon Bouchard', 'Nico Schuster']);
+            useEffect(() => {
+                if (Math.random() > 0.5) {
+                    setAuthorNames(['Nico Schuster', 'Simon Bouchard']);
+                }
+            }, []);
+
+            const [showCorrelation, setShowCorrelation] = useState(false);
+            const [showVoidProfile, setShowVoidProfile] = useState(false);
+            const [showDensityPDF, setShowDensityPDF] = useState(false);
+            const [trailMode, setTrailMode] = useState('history');
+            const [showVoronoi, setShowVoronoi] = useState(false);
+            const [showVoids, setShowVoids] = useState(false);
+            const [voidThreshold, setVoidThreshold] = useState(2.0);
+            const [minVoidRadius, setMinVoidRadius] = useState(10);
+            const [voidCenterMode, setVoidCenterMode] = useState('geometric');
+            const [profileMode, setProfileMode] = useState('median');
+
+            // --- Collapsible sidebar sections ---
+            const [secEvolution, setSecEvolution] = useState(true);
+            const [secCosmology, setSecCosmology] = useState(true);
+            const [secTools, setSecTools] = useState(true);
+
+            // --- Tutorial State & Refs ---
+            const [tutorialStep, setTutorialStep] = useState(0);
+            const playBtnRef = useRef(null);
+            const cosmoRef = useRef(null);
+            const toolsRef = useRef(null);
+
+            // --- Simulation Time Step ---
+            const [simDeltaT, setSimDeltaT] = useState(0.002);
+
+            // --- Video Recording State ---
+            const [isRecording, setIsRecording] = useState(false);
+            const [recordResolution, setRecordResolution] = useState('window'); // 'window', '720p', '1080p'
+            const [recProgress, setRecProgress] = useState(null); // { current, total, z, ageGyr } or null
+            const recorderRef = useRef(null);         // SimulationRecorder instance
+            const isRecordingRef = useRef(false);     // ref flag for render loop
+            const recRenderFnRef = useRef(null);      // stores render() for recording loop to call
+            const recStopRequestedRef = useRef(false); // manual stop flag (loop adds 3s hold then saves)
+            const savedCanvasSizeRef = useRef(null);  // restore after 720p/1080p recording
+            const pendingRecRef = useRef(null);       // deferred recording start after canvas resize
+
+            const simulationTimeRef = useRef(cosmologyLUT.minTime);
+            const rulerRef = useRef({ start: null, current: null, isSculpting: false, mouse: null });
+
+            const workerRef = useRef(null);
+            const isWorkerBusy = useRef(false);
+            const voronoiDataRef = useRef(null);
+
+            const uiCanvasRef = useRef(null);
+            const webglCanvasRef = useRef(null);
+            const glRef = useRef(null);
+            const programRef = useRef(null);
+
+            // --- Panel B WebGL refs (split-screen) ---
+            const uiCanvasRefB = useRef(null);
+            const webglCanvasRefB = useRef(null);
+            const glRefB = useRef(null);
+            const programRefB = useRef(null);
+            const buffersRefB = useRef({ position: null, color: null, size: null });
+            const webglDataRefB = useRef({
+                colors: new Float32Array(0),
+                sizes: new Float32Array(0),
+                positions: new Float32Array(0)
+            });
+
+            // --- GPU Gravity & Correlation (WebGPU) ---
+            const gpuGravityRef = useRef(null);
+            const gpuCorrelationRef = useRef(null);
+            const gpuCorrResultRef = useRef(null);    // Panel A GPU histogram
+            const gpuCorrInFlightRef = useRef(false);  // Panel A in-flight flag
+            const gpuCorrResultRefB = useRef(null);    // Panel B GPU histogram
+            const gpuCorrInFlightRefB = useRef(false); // Panel B in-flight flag
+            const pkCorrCentersRef = useRef(null);    // (unused, kept for future caching)
+            const [gpuAvailable, setGpuAvailable] = useState(false);
+            const [useGPU, setUseGPU] = useState(true);
+            const gpuHardwareAvailable = useRef(false);
+
+            // WebGL Buffers
+            const buffersRef = useRef({
+                position: null,
+                color: null,
+                size: null
+            });
+
+            // --- Tutorial Data & Logic ---
+            const tutorialSteps = [
+                { target: playBtnRef, title: "Time & Evolution", content: "Move through time using only linear theory, or hit Play to enable non-linear N-body gravity for more accurate physics on small scales." },
+                { target: cosmoRef, title: "Build Your Universe", content: "Change the dark matter and dark energy ratios, as well as cosmological models. Watch how it alters the final structures in the cosmic web." },
+                { target: toolsRef, title: "Analyze the Web", content: "Find voids, measure the power spectrum, and render the temperature of the gas." }
+            ];
+
+            const closeTutorial = () => setTutorialStep(0);
+            const nextStep = () => {
+                if (tutorialStep === tutorialSteps.length) setTutorialStep(0);
+                else setTutorialStep(s => s + 1);
+            };
+
+            useEffect(() => {
+                // Try external file first; fall back to inline blob for file:// protocol
+                let worker;
+                try {
+                    worker = new Worker('workers/void-worker.js');
+                    // Test if the worker actually loaded by adding an error handler
+                    worker.onerror = (err) => {
+                        console.warn('[VoidWorker] External file failed, falling back to inline blob', err);
+                        worker.terminate();
+                        const blob = new Blob([workerCode], { type: 'application/javascript' });
+                        const url = URL.createObjectURL(blob);
+                        const fallback = new Worker(url);
+                        workerRef.current = fallback;
+                        fallback.onmessage = (e) => {
+                            voronoiDataRef.current = e.data;
+                            isWorkerBusy.current = false;
+                        };
+                    };
+                } catch (e) {
+                    // Direct fallback
+                    const blob = new Blob([workerCode], { type: 'application/javascript' });
+                    const url = URL.createObjectURL(blob);
+                    worker = new Worker(url);
+                }
+                workerRef.current = worker;
+
+                worker.onmessage = (e) => {
+                    voronoiDataRef.current = e.data;
+                    isWorkerBusy.current = false;
+                };
+
+                return () => {
+                    if (workerRef.current) workerRef.current.terminate();
+                };
+            }, []);
+
+            // --- Initialize Panel B Void Worker ---
+            useEffect(() => {
+                let workerB;
+                try {
+                    workerB = new Worker('workers/void-worker.js');
+                    workerB.onerror = () => {
+                        workerB.terminate();
+                        const blob = new Blob([workerCode], { type: 'application/javascript' });
+                        const url = URL.createObjectURL(blob);
+                        workerRefB.current = new Worker(url);
+                        workerRefB.current.onmessage = (e) => { voronoiDataRefB.current = e.data; isWorkerBusyB.current = false; };
+                    };
+                } catch (e) {
+                    const blob = new Blob([workerCode], { type: 'application/javascript' });
+                    const url = URL.createObjectURL(blob);
+                    workerB = new Worker(url);
+                }
+                workerRefB.current = workerB;
+                workerB.onmessage = (e) => { voronoiDataRefB.current = e.data; isWorkerBusyB.current = false; };
+                return () => { if (workerRefB.current) workerRefB.current.terminate(); };
+            }, []);
+
+            // --- Initialize WebGPU Gravity ---
+            useEffect(() => {
+                if (typeof GPUGravityCompute === 'undefined') {
+                    console.log('[GPUGravity] GPUGravityCompute class not loaded');
+                    return;
+                }
+                const gpu = new GPUGravityCompute();
+                gpu.init().then(async (ok) => {
+                    if (ok) {
+                        gpuGravityRef.current = gpu;
+                        setGpuAvailable(true);
+                        gpuHardwareAvailable.current = true;
+                        setUseGPU(true);
+                        console.log('[GPUGravity] Ready');
+                        // Initialize GPU correlation, sharing the same WebGPU device
+                        if (typeof GPUCorrelationCompute !== 'undefined') {
+                            const corr = new GPUCorrelationCompute();
+                            const corrOk = await corr.init(gpu.device);
+                            if (corrOk) {
+                                gpuCorrelationRef.current = corr;
+                                console.log('[GPUCorrelation] Ready (shared device)');
+                            }
+                        }
+                    } else {
+                        console.log('[GPUGravity] Not available, using CPU fallback');
+                    }
+                });
+                return () => {
+                    if (gpuCorrelationRef.current) {
+                        gpuCorrelationRef.current.destroy();
+                        gpuCorrelationRef.current = null;
+                    }
+                    if (gpuGravityRef.current) {
+                        gpuGravityRef.current.destroy();
+                        gpuGravityRef.current = null;
+                    }
+                };
+            }, []);
+
+
+            useEffect(() => {
+                voronoiDataRef.current = null;
+            }, [minVoidRadius, showVoids]);
+
+            const lastCalcParamsRef = useRef({ minVoidRadius: 10, voidThreshold: 1.0 });
+
+            useEffect(() => {
+                if (simulationTimeRef.current < cosmologyLUT.minTime) {
+                    simulationTimeRef.current = cosmologyLUT.minTime;
+                    setCosmicTime(cosmologyLUT.minTime);
+                }
+            }, [cosmologyLUT]);
+
+            const headRef = useRef(new Int32Array(0));
+            const nextRef = useRef(new Int32Array(0));
+            const posRef = useRef({ x: new Float32Array(0), y: new Float32Array(0), size: 0 });
+
+            const localDynamics = useRef({
+                offsets: new Float32Array(0),
+                velocities: new Float32Array(0),
+                densities: new Float32Array(0),
+                smoothedDensities: new Float32Array(0),
+                crossingAccum: new Float32Array(0), // ADHESION: Track crossing accumulator
+                initialized: false
+            });
+            const trailHistory = useRef([]);
+
+            // --- Panel B physics state (split-screen) ---
+            const headRefB = useRef(new Int32Array(0));
+            const nextRefB = useRef(new Int32Array(0));
+            const posRefB = useRef({ x: new Float32Array(0), y: new Float32Array(0), size: 0 });
+
+            const localDynamicsB = useRef({
+                offsets: new Float32Array(0),
+                velocities: new Float32Array(0),
+                densities: new Float32Array(0),
+                smoothedDensities: new Float32Array(0),
+                crossingAccum: new Float32Array(0),
+                initialized: false
+            });
+            const trailHistoryB = useRef([]);
+            const voronoiDataRefB = useRef(null);
+            const workerRefB = useRef(null);
+            const isWorkerBusyB = useRef(false);
+            const lastCalcParamsRefB = useRef({ minVoidRadius: 10, voidThreshold: 1.0 });
+
+            // Arrays for WebGL data transfer (avoids reallocation)
+            const webglDataRef = useRef({
+                colors: new Float32Array(0),
+                sizes: new Float32Array(0),
+                positions: new Float32Array(0)
+            });
+
+            const { z: redshift, D: growthD } = useMemo(() => {
+                return getValuesAtTime(cosmicTime, cosmologyLUT);
+            }, [cosmicTime, cosmologyLUT]);
+
+            const ageGyr = useMemo(() => calculateAgeGyr(redshift, omegaM, omegaL, w0, wa), [redshift, omegaM, omegaL, w0, wa]);
+
+            // E&H Eq. 26 sound horizon fitting formula (Mpc)
+            // Matches the BAO oscillation scale in the E&H transfer function
+            // Ω_b = 0.157 × Ω_m (Planck baryon fraction)
+            const BAO_RADIUS_MPC = useMemo(() => {
+                const om = Math.max(0.01, omegaM);
+                const omhh = om * PLANCK_H * PLANCK_H;
+                const obhh = om * PLANCK_FB * PLANCK_H * PLANCK_H;
+                return 44.5 * Math.log(9.83 / omhh) / Math.sqrt(1.0 + 10.0 * Math.pow(obhh, 0.75));
+            }, [omegaM]);
+
+            const BAO_RADIUS_MPC_B = useMemo(() => {
+                const om = Math.max(0.01, omegaMB);
+                const omhh = om * PLANCK_H * PLANCK_H;
+                const obhh = om * PLANCK_FB * PLANCK_H * PLANCK_H;
+                return 44.5 * Math.log(9.83 / omhh) / Math.sqrt(1.0 + 10.0 * Math.pow(obhh, 0.75));
+            }, [omegaMB]);
+
+            const DIVIDER_WIDTH = 4;
+            const panelW = splitScreen ? Math.floor((canvasSize.w - DIVIDER_WIDTH) / 2) : canvasSize.w;
+            const SIM_W = panelW;
+            const SIM_H = canvasSize.h;
+            const tracersPerPanel = splitScreen ? Math.ceil(numTracers / 2) : numTracers;
+            const pxPerMpc = canvasSize.w / boxSizeMpc; // FoV refers to full screen width
+            const panelBoxMpc = SIM_W / pxPerMpc;       // physical Mpc across one panel
+            const BAO_RADIUS_PX = BAO_RADIUS_MPC * pxPerMpc;
+            const BAO_RADIUS_PX_B = BAO_RADIUS_MPC_B * pxPerMpc;
+            const INTERACTION_RADIUS = Math.max(SIM_W, SIM_H) * 0.8;
+            const INTERACTION_RADIUS_SQ = INTERACTION_RADIUS * INTERACTION_RADIUS;
+
+            // Initialize WebGL — Panel A (re-runs when splitScreen toggles because canvas may remount)
+            useEffect(() => {
+                const canvas = webglCanvasRef.current;
+                if (!canvas) return;
+                const result = setupPanelWebGL(canvas);
+                if (result) {
+                    glRef.current = result.gl;
+                    programRef.current = result.program;
+                    buffersRef.current = result.buffers;
+                }
+            }, [splitScreen]);
+
+            // Initialize WebGL — Panel B (only when split-screen is on)
+            useEffect(() => {
+                if (!splitScreen) {
+                    glRefB.current = null;
+                    programRefB.current = null;
+                    buffersRefB.current = { position: null, color: null, size: null };
+                    return;
+                }
+                const canvas = webglCanvasRefB.current;
+                if (!canvas) return;
+                const result = setupPanelWebGL(canvas);
+                if (result) {
+                    glRefB.current = result.gl;
+                    programRefB.current = result.program;
+                    buffersRefB.current = result.buffers;
+                }
+            }, [splitScreen]);
+
+            // Handle Canvas Resize for WebGL
+            useEffect(() => {
+                // Panel A
+                const gl = glRef.current;
+                const canvas = webglCanvasRef.current;
+                if (gl && canvas && programRef.current) {
+                    gl.viewport(0, 0, canvas.width, canvas.height);
+                    const resLoc = gl.getUniformLocation(programRef.current, "u_resolution");
+                    gl.uniform2f(resLoc, canvas.width, canvas.height);
+                }
+                // Panel B
+                const glB = glRefB.current;
+                const canvasB = webglCanvasRefB.current;
+                if (glB && canvasB && programRefB.current) {
+                    glB.viewport(0, 0, canvasB.width, canvasB.height);
+                    const resLoc = glB.getUniformLocation(programRefB.current, "u_resolution");
+                    glB.uniform2f(resLoc, canvasB.width, canvasB.height);
+                }
+            }, [canvasSize, splitScreen]);
+
+            const centers = useMemo(() => {
+                const rng = (s) => {
+                    let h = 0xdeadbeef;
+                    return () => { h = Math.imul(h ^ s, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16; return (h >>> 0) / 4294967296; }
+                };
+                const rand = rng(seed * 7331 + boxSizeMpc);
+                const list = [];
+                if (numCircles > 0) {
+                    list.push({ x: SIM_W/2, y: SIM_H/2 });
+                    for(let i=1; i<numCircles; i++) list.push({ x: rand()*SIM_W, y: rand()*SIM_H });
+                }
+                return list;
+            }, [numCircles, seed, SIM_W, SIM_H, boxSizeMpc]);
+
+            const initialTracers = useMemo(() => {
+                const rng = (s) => {
+                    let h = 0x12345678;
+                    return () => { h = Math.imul(h ^ s, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16; return (h >>> 0) / 4294967296; }
+                };
+                const rand = rng(seed * 7331 + boxSizeMpc + 1);
+                const list = [];
+
+                for(let i=0; i<tracersPerPanel; i++) {
+                    const noiseAngle = rand() * Math.PI * 2;
+                    const noiseMag = rand();
+                    list.push({
+                        qx: rand() * SIM_W,
+                        qy: rand() * SIM_H,
+                        id: i,
+                        noiseX: Math.cos(noiseAngle) * noiseMag,
+                        noiseY: Math.sin(noiseAngle) * noiseMag
+                    });
+                }
+
+                localDynamics.current = {
+                    offsets: new Float32Array(tracersPerPanel * 2),
+                    velocities: new Float32Array(tracersPerPanel * 2),
+                    gravityForces: new Float32Array(tracersPerPanel * 2),
+                    prevGravForces: new Float32Array(tracersPerPanel * 2),
+                    densities: new Float32Array(tracersPerPanel),
+                    smoothedDensities: new Float32Array(tracersPerPanel),
+                    crossingAccum: new Float32Array(tracersPerPanel),
+                    thermalPhases: initThermalPhases(tracersPerPanel, seed),
+                    initialized: true
+                };
+
+                if (posRef.current.size !== tracersPerPanel) {
+                    posRef.current = {
+                        x: new Float32Array(tracersPerPanel),
+                        y: new Float32Array(tracersPerPanel),
+                        size: tracersPerPanel
+                    };
+                }
+
+                // Initialize WebGL transfer arrays size
+                webglDataRef.current = {
+                    colors: new Float32Array(tracersPerPanel * 4),
+                    sizes: new Float32Array(tracersPerPanel),
+                    positions: new Float32Array(tracersPerPanel * 2)
+                };
+
+                trailHistory.current = [];
+                for(let k=0; k<tracersPerPanel; k++) {
+                    trailHistory.current.push({ id: k, path: [] });
+                }
+
+                // --- Initialize Panel B physics state (same arrays, independent dynamics) ---
+                localDynamicsB.current = {
+                    offsets: new Float32Array(tracersPerPanel * 2),
+                    velocities: new Float32Array(tracersPerPanel * 2),
+                    gravityForces: new Float32Array(tracersPerPanel * 2),
+                    prevGravForces: new Float32Array(tracersPerPanel * 2),
+                    densities: new Float32Array(tracersPerPanel),
+                    smoothedDensities: new Float32Array(tracersPerPanel),
+                    crossingAccum: new Float32Array(tracersPerPanel),
+                    thermalPhases: initThermalPhases(tracersPerPanel, seed + 9999),
+                    initialized: true
+                };
+                if (posRefB.current.size !== tracersPerPanel) {
+                    posRefB.current = {
+                        x: new Float32Array(tracersPerPanel),
+                        y: new Float32Array(tracersPerPanel),
+                        size: tracersPerPanel
+                    };
+                }
+                if (headRefB.current.length === 0) headRefB.current = new Int32Array(0);
+                if (nextRefB.current.length === 0) nextRefB.current = new Int32Array(0);
+                trailHistoryB.current = [];
+                for(let k=0; k<tracersPerPanel; k++) {
+                    trailHistoryB.current.push({ id: k, path: [] });
+                }
+
+                // --- Panel B WebGL data arrays ---
+                webglDataRefB.current = {
+                    colors: new Float32Array(tracersPerPanel * 4),
+                    sizes: new Float32Array(tracersPerPanel),
+                    positions: new Float32Array(tracersPerPanel * 2)
+                };
+
+                return list;
+            }, [seed, SIM_W, SIM_H, tracersPerPanel, boxSizeMpc]);
+
+            const tracerForces = useMemo(() => {
+                if (initMode === 'pk') {
+                    return generatePkDisplacements(initialTracers, tracersPerPanel, SIM_W, SIM_H, omegaM, panelBoxMpc, seed);
+                }
+                return computeTracerForces(initialTracers, centers, BAO_RADIUS_PX, tracersPerPanel, SIM_W, SIM_H, seed, omegaM, panelBoxMpc);
+            }, [initialTracers, centers, BAO_RADIUS_PX, tracersPerPanel, SIM_W, SIM_H, seed, omegaM, initMode, panelBoxMpc]);
+
+            const tracerForcesB = useMemo(() => {
+                if (!splitScreen) return tracerForces;
+                if (initMode === 'pk') {
+                    return generatePkDisplacements(initialTracers, tracersPerPanel, SIM_W, SIM_H, omegaMB, panelBoxMpc, seed);
+                }
+                return computeTracerForces(initialTracers, centers, BAO_RADIUS_PX_B, tracersPerPanel, SIM_W, SIM_H, seed, omegaMB, panelBoxMpc);
+            }, [splitScreen, initialTracers, centers, BAO_RADIUS_PX_B, tracersPerPanel, SIM_W, SIM_H, seed, tracerForces, omegaMB, initMode, panelBoxMpc]);
+
+            // 2LPT correction displacement computed from 1LPT via FFT
+            const tracerForces2 = useMemo(() => {
+                return compute2LPTDisplacement(tracerForces, initialTracers, tracersPerPanel, SIM_W, SIM_H);
+            }, [tracerForces, initialTracers, tracersPerPanel, SIM_W, SIM_H]);
+
+            const tracerForces2B = useMemo(() => {
+                if (!splitScreen) return tracerForces2;
+                return compute2LPTDisplacement(tracerForcesB, initialTracers, tracersPerPanel, SIM_W, SIM_H);
+            }, [splitScreen, tracerForcesB, initialTracers, tracersPerPanel, SIM_W, SIM_H, tracerForces2]);
+
+            const resetPhysics = () => {
+                localDynamics.current.offsets.fill(0);
+                localDynamics.current.velocities.fill(0);
+                localDynamics.current.gravityForces.fill(0);
+                if (localDynamics.current.prevGravForces) localDynamics.current.prevGravForces.fill(0);
+                localDynamics.current.densities.fill(0);
+                // Snap smoothedDensities to 0 (will be overwritten on next render)
+                // so gas view doesn't show stale data from a previous run
+                if (localDynamics.current.smoothedDensities) localDynamics.current.smoothedDensities.fill(0);
+                if (localDynamics.current.crossingAccum) localDynamics.current.crossingAccum.fill(0);
+                voronoiDataRef.current = null;
+                if (trailHistory.current) {
+                    for(let i=0; i<trailHistory.current.length; i++) {
+                        trailHistory.current[i].path = [];
+                    }
+                }
+            };
+
+            const resetPhysicsB = () => {
+                localDynamicsB.current.offsets.fill(0);
+                localDynamicsB.current.velocities.fill(0);
+                localDynamicsB.current.gravityForces.fill(0);
+                if (localDynamicsB.current.prevGravForces) localDynamicsB.current.prevGravForces.fill(0);
+                localDynamicsB.current.densities.fill(0);
+                if (localDynamicsB.current.smoothedDensities) localDynamicsB.current.smoothedDensities.fill(0);
+                if (localDynamicsB.current.crossingAccum) localDynamicsB.current.crossingAccum.fill(0);
+                voronoiDataRefB.current = null;
+                if (trailHistoryB.current) {
+                    for(let i=0; i<trailHistoryB.current.length; i++) {
+                        trailHistoryB.current[i].path = [];
+                    }
+                }
+            };
+
+            const resetVoidAnalysis = () => {
+                setShowVoronoi(false);
+                setShowVoids(false);
+                setShowVoidProfile(false);
+                setVoidThreshold(2.0);
+                setMinVoidRadius(10);
+                voronoiDataRef.current = null;
+                voronoiDataRefB.current = null;
+            };
+
+            const handlePlayToggle = () => {
+                const minT = cosmologyLUT.minTime;
+                if (!isPlaying && cosmicTime >= 1.0) {
+                    simulationTimeRef.current = minT;
+                    setCosmicTime(minT);
+                    resetPhysics();
+                    if (splitScreen) resetPhysicsB();
+                    setRenderTrigger(t => t + 1);
+                    return;
+                }
+                setIsPlaying(!isPlaying);
+            };
+
+            const handleRestart = () => {
+                const minT = cosmologyLUT.minTime;
+                simulationTimeRef.current = minT;
+                setCosmicTime(minT);
+                setIsPlaying(false);
+                resetPhysics();
+                if (splitScreen) resetPhysicsB();
+                resetVoidAnalysis();
+                setRenderTrigger(t => t + 1);
+            };
+
+            const handleTimeSliderChange = (e) => {
+                const t = parseFloat(e.target.value);
+                simulationTimeRef.current = t;
+                setCosmicTime(t);
+                setIsPlaying(false);
+                if (localDynamics.current.initialized) resetPhysics();
+                if (splitScreen && localDynamicsB.current.initialized) resetPhysicsB();
+                resetVoidAnalysis();
+                setRenderTrigger(tr => tr + 1);
+            };
+
+            const handleOmegaMChange = (e) => {
+                const val = parseFloat(e.target.value);
+                setOmegaM(val);
+                if (isFlat) setOmegaL(parseFloat((1 - val).toFixed(2)));
+                handleRestart();
+            };
+            const handleOmegaLChange = (e) => {
+                const val = parseFloat(e.target.value);
+                setOmegaL(val);
+                if (isFlat) setOmegaM(parseFloat((1 - val).toFixed(2)));
+                handleRestart();
+            };
+            const toggleFlat = () => {
+                const newFlat = !isFlat;
+                setIsFlat(newFlat);
+                if (newFlat) setOmegaL(parseFloat((1 - omegaM).toFixed(2)));
+                handleRestart();
+            };
+            const handleCosmoModeChange = (mode) => {
+                setCosmoMode(mode);
+                if (mode === 'LCDM') { setW0(-1.0); setWa(0.0); }
+                else if (mode === 'wCDM') { setWa(0.0); }
+                handleRestart();
+            };
+            const handleW0Change = (e) => { setW0(parseFloat(e.target.value)); handleRestart(); };
+            const handleWaChange = (e) => { setWa(parseFloat(e.target.value)); handleRestart(); };
+
+            // --- Panel B cosmology handlers (only reset Panel B, not Panel A) ---
+            const handleRestartB = () => {
+                resetPhysicsB();
+                voronoiDataRefB.current = null;
+                setRenderTrigger(t => t + 1);
+            };
+            const handleOmegaMChangeB = (e) => {
+                const val = parseFloat(e.target.value);
+                setOmegaMB(val);
+                if (isFlatB) setOmegaLB(parseFloat((1 - val).toFixed(2)));
+                handleRestartB();
+            };
+            const handleOmegaLChangeB = (e) => {
+                const val = parseFloat(e.target.value);
+                setOmegaLB(val);
+                if (isFlatB) setOmegaMB(parseFloat((1 - val).toFixed(2)));
+                handleRestartB();
+            };
+            const toggleFlatB = () => {
+                const newFlat = !isFlatB;
+                setIsFlatB(newFlat);
+                if (newFlat) setOmegaLB(parseFloat((1 - omegaMB).toFixed(2)));
+                handleRestartB();
+            };
+            const handleCosmoModeChangeB = (mode) => {
+                setCosmoModeB(mode);
+                if (mode === 'LCDM') { setW0B(-1.0); setWaB(0.0); }
+                else if (mode === 'wCDM') { setWaB(0.0); }
+                handleRestartB();
+            };
+            const handleW0ChangeB = (e) => { setW0B(parseFloat(e.target.value)); handleRestartB(); };
+            const handleWaChangeB = (e) => { setWaB(parseFloat(e.target.value)); handleRestartB(); };
+
+            const takeScreenshot = () => {
+                // Combine canvases (both panels in split-screen)
+                const glCanvas = webglCanvasRef.current;
+                const uiCanvas = uiCanvasRef.current;
+                if(glCanvas && uiCanvas) {
+                    const totalW = splitScreen ? (SIM_W * 2 + DIVIDER_WIDTH) : SIM_W;
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = totalW;
+                    tempCanvas.height = SIM_H;
+                    const tCtx = tempCanvas.getContext('2d');
+
+                    // Draw black background
+                    tCtx.fillStyle = '#000000';
+                    tCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+
+                    // Draw Panel A
+                    tCtx.drawImage(glCanvas, 0, 0);
+                    tCtx.drawImage(uiCanvas, 0, 0);
+
+                    // Draw Panel B (if split-screen)
+                    if (splitScreen && webglCanvasRefB.current && uiCanvasRefB.current) {
+                        const bx = SIM_W + DIVIDER_WIDTH;
+                        // Divider
+                        tCtx.fillStyle = 'rgba(255,255,255,0.35)';
+                        tCtx.fillRect(SIM_W, 0, DIVIDER_WIDTH, SIM_H);
+                        tCtx.drawImage(webglCanvasRefB.current, bx, 0);
+                        tCtx.drawImage(uiCanvasRefB.current, bx, 0);
+                    }
+
+                    // Draw HUD info box
+                    const hudX = tempCanvas.width - 180;
+                    const hudY = 32;
+                    const hudW = 150;
+                    const hudH = 58;
+                    tCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                    tCtx.fillRect(hudX, hudY, hudW, hudH);
+                    tCtx.strokeStyle = 'rgba(255,255,255,0.1)';
+                    tCtx.strokeRect(hudX, hudY, hudW, hudH);
+                    tCtx.textAlign = 'right';
+                    tCtx.fillStyle = '#ffffff';
+                    tCtx.font = 'bold 14px Inter, sans-serif';
+                    tCtx.fillText(`${ageGyr.toFixed(2)} Gyr`, hudX + hudW - 10, hudY + 22);
+                    tCtx.fillStyle = '#cbd5e1';
+                    tCtx.font = 'bold 20px monospace';
+                    tCtx.fillText(`z = ${redshift.toFixed(2)}`, hudX + hudW - 10, hudY + 46);
+
+                    // Link text bottom-right
+                    // Link text bottom-right with rounded box
+                    const linkText = 'nicosmo.github.io/cosmic_web_explorer';
+                    const linkFontSize = 22;
+                    tCtx.font = `300 ${linkFontSize}px Inter, sans-serif`;
+                    tCtx.textAlign = 'right';
+                    tCtx.textBaseline = 'middle';
+
+                    const linkMetrics = tCtx.measureText(linkText);
+                    const linkWidth = linkMetrics.width;
+                    const linkPadX = 12;
+                    const linkPadY = 8;
+                    const linkBoxW = linkWidth + linkPadX * 2;
+                    const linkBoxH = linkFontSize + linkPadY * 2;
+
+                    const linkBoxX = tempCanvas.width - linkBoxW - 20;
+                    const linkBoxY = tempCanvas.height - linkBoxH - 20;
+                    const linkRadius = 8;
+
+                    // Draw semi-transparent box
+                    tCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                    tCtx.beginPath();
+                    tCtx.moveTo(linkBoxX + linkRadius, linkBoxY);
+                    tCtx.arcTo(linkBoxX + linkBoxW, linkBoxY, linkBoxX + linkBoxW, linkBoxY + linkBoxH, linkRadius);
+                    tCtx.arcTo(linkBoxX + linkBoxW, linkBoxY + linkBoxH, linkBoxX, linkBoxY + linkBoxH, linkRadius);
+                    tCtx.arcTo(linkBoxX, linkBoxY + linkBoxH, linkBoxX, linkBoxY, linkRadius);
+                    tCtx.arcTo(linkBoxX, linkBoxY, linkBoxX + linkBoxW, linkBoxY, linkRadius);
+                    tCtx.closePath();
+                    tCtx.fill();
+
+                    // Draw subtle border matching HUD
+                    tCtx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+                    tCtx.lineWidth = 1;
+                    tCtx.stroke();
+
+                    // Draw text
+                    tCtx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+                    tCtx.fillText(linkText, tempCanvas.width - 20 - linkPadX, linkBoxY + (linkBoxH / 2));
+
+                    const link = document.createElement('a');
+                    const screenshotPrefix = initMode === 'bao' ? 'BAO_LSS' : 'LSS';
+                    link.download = `${screenshotPrefix}_visualization_z${redshift.toFixed(2)}.png`;
+                    link.href = tempCanvas.toDataURL();
+                    link.click();
+                }
+            };
+
+            // --- DATA EXPORT (CSV) ---
+            const exportPanelCSV = (pos, panelLabel, pOmegaM, pOmegaL, pW0, pWa, pGrowthD, pBaoMpc) => {
+                if (!pos || !pos.x || pos.x.length === 0) return;
+                const N = tracersPerPanel;
+                const h = PLANCK_H;
+                const omB = pOmegaM * PLANCK_FB;
+                const ns = PLANCK_NS;
+                const sigma8 = PLANCK_SIGMA8;
+                const scaleFactor = 1 / (1 + redshift);
+                const boxXMpc = SIM_W / pxPerMpc;
+                const boxYMpc = SIM_H / pxPerMpc;
+                const boxXMpcH = boxXMpc * h;
+                const boxYMpcH = boxYMpc * h;
+
+                const lines = [];
+                lines.push(`# Cosmic Web Explorer — Tracer positions${panelLabel ? ' (Panel ' + panelLabel + ')' : ''}`);
+                lines.push(`# init_mode = ${initMode === 'pk' ? 'Realistic (E&H P(k))' : 'BAO (idealized rings)'}`);
+                lines.push(`# N_tracers = ${N}`);
+                lines.push(`# seed = ${seed}`);
+                lines.push(`# h = ${h}`);
+                lines.push(`# Omega_m = ${pOmegaM}`);
+                lines.push(`# Omega_L = ${pOmegaL}`);
+                lines.push(`# Omega_b = ${omB.toFixed(6)}`);
+                lines.push(`# w0 = ${pW0}`);
+                lines.push(`# wa = ${pWa}`);
+                lines.push(`# n_s = ${ns}`);
+                lines.push(`# sigma_8 = ${sigma8}`);
+                lines.push(`# redshift = ${redshift.toFixed(4)}`);
+                lines.push(`# scale_factor = ${scaleFactor.toFixed(6)}`);
+                lines.push(`# growth_factor_D1 = ${pGrowthD.toFixed(6)}`);
+                lines.push(`# box_x = ${boxXMpc.toFixed(2)} Mpc  (${boxXMpcH.toFixed(2)} Mpc/h)`);
+                lines.push(`# box_y = ${boxYMpc.toFixed(2)} Mpc  (${boxYMpcH.toFixed(2)} Mpc/h)`);
+                lines.push(`# units = Mpc/h (comoving)`);
+                lines.push(`# boundary = periodic`);
+                if (initMode === 'bao') {
+                    lines.push(`# N_baoRings = ${numCircles}`);
+                    lines.push(`# bao_scale = ${pBaoMpc.toFixed(2)} Mpc`);
+                }
+                lines.push('# x_Mpc/h, y_Mpc/h');
+
+                for (let i = 0; i < N; i++) {
+                    const xMpcH = (pos.x[i] / pxPerMpc) * h;
+                    const yMpcH = ((SIM_H - pos.y[i]) / pxPerMpc) * h;  // flip y: bottom-left origin
+                    lines.push(`${xMpcH.toFixed(4)}, ${yMpcH.toFixed(4)}`);
+                }
+
+                const csv = lines.join('\n');
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                const panelSuffix = panelLabel ? `_panel${panelLabel}` : '';
+                const csvPrefix = initMode === 'bao' ? 'BAO_LSS' : 'LSS';
+                link.download = `${csvPrefix}_tracers_z${redshift.toFixed(2)}${panelSuffix}.csv`;
+                link.href = url;
+                link.click();
+                URL.revokeObjectURL(url);
+            };
+
+            const handleDataExport = () => {
+                if (splitScreen) {
+                    // Panel B growth factor at the same redshift through its own cosmology
+                    const resultB = getValuesAtRedshift(redshift, cosmologyLUTB);
+                    const growthDB = resultB ? resultB.D : growthD;
+                    exportPanelCSV(posRef.current, 'A', omegaM, omegaL, w0, wa, growthD, BAO_RADIUS_MPC);
+                    // Small delay so the browser doesn't block the second download
+                    setTimeout(() => {
+                        exportPanelCSV(posRefB.current, 'B', omegaMB, omegaLB, w0B, waB, growthDB, BAO_RADIUS_MPC_B);
+                    }, 200);
+                } else {
+                    exportPanelCSV(posRef.current, '', omegaM, omegaL, w0, wa, growthD, BAO_RADIUS_MPC);
+                }
+            };
+
+            // --- VIDEO RECORDING ---
+            // Pure JS WebM encoder (no MediaRecorder). gl.readPixels -> WebP -> VP8 -> EBML.
+            // Deterministic frame count: holdStart + simSteps + holdEnd at 30fps.
+            // Records from current z (window res) or z=10 (720p/1080p — regenerates ICs).
+            // Stop saves partial video with 3s hold at the stopped z.
+
+            const getSpeedLabel = () => {
+                if (simDeltaT === 0.004) return 'Fast';
+                if (simDeltaT === 0.002) return 'Normal';
+                if (simDeltaT === 0.001) return 'Smooth';
+                if (simDeltaT === 0.0005) return 'HQ';
+                if (simDeltaT === 0.00025) return 'Ultra-HQ';
+                return `dt${simDeltaT.toString().replace('.', '')}`;
+            };
+
+            const startRecording = () => {
+                // Stop playback if running
+                if (isPlaying) setIsPlaying(false);
+
+                const currentT = simulationTimeRef.current;
+                const speedLabel = getSpeedLabel();
+                const gasLabel = showGas ? '_Gas' : '';
+
+                // Mark recording active so render loop won't self-schedule
+                isRecordingRef.current = true;
+                recStopRequestedRef.current = false;
+                setIsRecording(true);
+
+                // Determine recording resolution
+                if (recordResolution === '720p' || recordResolution === '1080p') {
+                    const recW = recordResolution === '720p' ? 1280 : 1920;
+                    const recH = recordResolution === '720p' ? 720 : 1080;
+                    // Save current canvas size for restoration
+                    savedCanvasSizeRef.current = { w: canvasSize.w, h: canvasSize.h };
+                    // Set pending — will be picked up after canvas resize regenerates ICs
+                    pendingRecRef.current = { speedLabel, gasLabel };
+                    // Canvas resize triggers IC regeneration -> record from z=10
+                    setCanvasSize({ w: recW, h: recH });
+                } else {
+                    // Window resolution — record from current z
+                    actualStartRecording(currentT, speedLabel, gasLabel);
+                }
+            };
+
+            const actualStartRecording = (startTime, speedLabel, gasLabel = '') => {
+                const glCanvas = webglCanvasRef.current;
+                const uiCanvas = uiCanvasRef.current;
+                if (!glCanvas || !uiCanvas) { finishRecording(speedLabel, gasLabel, 10, 0); return; }
+
+                // In split-screen, the recording canvas is the full width (both panels + divider)
+                let recW, recH;
+                if (splitScreen) {
+                    recW = glCanvas.width * 2 + DIVIDER_WIDTH;
+                    recH = glCanvas.height;
+                } else {
+                    recW = glCanvas.width;
+                    recH = glCanvas.height;
+                }
+
+                const rec = new window.SimulationRecorder();
+                if (!rec.init(recW, recH, numTracers)) { finishRecording(speedLabel, gasLabel, 10, 0); return; }
+                recorderRef.current = rec;
+
+                const totalSteps = Math.ceil((1.0 - startTime) / simDeltaT);
+                const holdStartFrames = 30;  // 1 second at 30fps
+                const holdEndFrames   = 90;  // 3 seconds at 30fps
+                const totalFrames = holdStartFrames + totalSteps + holdEndFrames;
+
+                const { z: startZ } = getValuesAtTime(startTime, cosmologyLUT);
+                const startAge = calculateAgeGyr(startZ, omegaM, omegaL, w0, wa);
+                setRecProgress({ current: 0, total: totalFrames, z: startZ, ageGyr: startAge });
+
+                setTimeout(() => {
+                    runRecordingLoop(startTime, totalSteps, holdStartFrames, holdEndFrames, totalFrames, speedLabel, gasLabel);
+                }, 250);
+            };
+
+            const runRecordingLoop = async (startTime, totalSteps, holdStartFrames, holdEndFrames, totalFrames, speedLabel, gasLabel = '') => {
+                const gl = glRef.current;
+                const glCanvas = webglCanvasRef.current;
+                const uiCanvas = uiCanvasRef.current;
+                const rec = recorderRef.current;
+
+                if (!recRenderFnRef.current || !gl || !glCanvas || !uiCanvas || !rec) {
+                    console.error('[Recording] Missing refs, aborting');
+                    finishRecording(speedLabel, gasLabel, 10, 0);
+                    return;
+                }
+
+                let frameIdx = 0;
+
+                const getHudInfo = () => {
+                    const { z } = getValuesAtTime(simulationTimeRef.current, cosmologyLUT);
+                    const ageGyr = calculateAgeGyr(z, omegaM, omegaL, w0, wa);
+                    return { z, ageGyr };
+                };
+
+                const updateProgress = (total) => {
+                    const hi = getHudInfo();
+                    setRecProgress({ current: frameIdx, total, z: hi.z, ageGyr: hi.ageGyr });
+                };
+
+                const renderAndCapture = async () => {
+                    // Always read the LATEST render function from the ref.
+                    // The render useEffect re-runs on state changes (sidebar toggle, etc.),
+                    // which sets cancelled=true on the old closure. Reading from the ref
+                    // ensures we always call the current, non-cancelled render function.
+                    const currentRenderFn = recRenderFnRef.current;
+                    if (currentRenderFn) await currentRenderFn();
+                    gl.finish();
+                    // In split-screen, also finish Panel B's GL and pass both canvases
+                    const glB = glRefB.current;
+                    if (splitScreen && glB) glB.finish();
+                    const glCanvasB = splitScreen ? webglCanvasRefB.current : null;
+                    const uiCanvasB = splitScreen ? uiCanvasRefB.current : null;
+                    await rec.captureFrame(glCanvas, uiCanvas, getHudInfo(), glCanvasB, uiCanvasB, DIVIDER_WIDTH);
+                };
+
+                try {
+                // --- Warm up gas densities so recording doesn't start dark ---
+                // smoothedDensities starts at 0 after resetPhysics(). Run a few render
+                // passes without capturing to compute actual densities, then snap.
+                simulationTimeRef.current = startTime;
+                setCosmicTime(startTime);
+                for (let warmup = 0; warmup < 3; warmup++) {
+                    const currentRenderFn = recRenderFnRef.current;
+                    if (currentRenderFn) await currentRenderFn();
+                    await new Promise(r => setTimeout(r, 0));
+                }
+                // Snap smoothedDensities to actual densities so gas view is correct from frame 1
+                const ld = localDynamics.current;
+                if (ld && ld.smoothedDensities && ld.densities) {
+                    ld.smoothedDensities.set(ld.densities);
+                }
+                if (splitScreen) {
+                    const ldB = localDynamicsB.current;
+                    if (ldB && ldB.smoothedDensities && ldB.densities) {
+                        ldB.smoothedDensities.set(ldB.densities);
+                    }
+                }
+
+                // --- Initial render at starting z ---
+                await renderAndCapture();
+                frameIdx++;
+
+                // --- Hold start frame (1s) using duplicate frames (no re-encode) ---
+                for (let h = 1; h < holdStartFrames; h++) {
+                    rec.pushDuplicateFrame();
+                    frameIdx++;
+                    if (h % 10 === 0) updateProgress(totalFrames);
+                }
+                // Yield after hold
+                await new Promise(r => setTimeout(r, 0));
+
+                // --- Simulation frames ---
+                for (let step = 0; step < totalSteps; step++) {
+                    if (recStopRequestedRef.current) break;
+
+                    let nextT = startTime + (step + 1) * simDeltaT;
+                    if (nextT > 1.0) nextT = 1.0;
+                    simulationTimeRef.current = nextT;
+
+                    await renderAndCapture();
+                    frameIdx++;
+
+                    // Update slider + progress
+                    if (step % 3 === 0) setCosmicTime(nextT);
+                    if (step % 5 === 0) updateProgress(totalFrames);
+                }
+
+                // --- Hold final frame (3s) — always runs, even after manual stop ---
+                const actualTotal = frameIdx + holdEndFrames;
+                // Capture one real frame at current z for the hold
+                await renderAndCapture();
+                frameIdx++;
+                for (let h = 1; h < holdEndFrames; h++) {
+                    rec.pushDuplicateFrame();
+                    frameIdx++;
+                    if (h % 10 === 0) {
+                        const hi = getHudInfo();
+                        setRecProgress({ current: frameIdx, total: actualTotal, z: hi.z, ageGyr: hi.ageGyr });
+                    }
+                }
+                // Yield
+                await new Promise(r => setTimeout(r, 0));
+
+                } catch (e) {
+                    console.error('[Recording] Error during recording loop:', e);
+                }
+
+                // Compute final z for filename
+                const { z: endZ } = getValuesAtTime(simulationTimeRef.current, cosmologyLUT);
+                const { z: sZ } = getValuesAtTime(startTime, cosmologyLUT);
+                finishRecording(speedLabel, gasLabel, sZ, endZ);
+            };
+
+            const finishRecording = async (speedLabel, gasLabel = '', startZ = 10, endZ = 0) => {
+                const rec = recorderRef.current;
+                isRecordingRef.current = false;
+                recStopRequestedRef.current = false;
+
+                if (rec) {
+                    try {
+                        const res = recordResolution === 'window'
+                            ? `${rec.width}x${rec.height}` : recordResolution;
+                        const zRange = `z${startZ.toFixed(1)}-${endZ.toFixed(1)}`;
+                        const splitLabel = splitScreen ? '_compare' : '';
+                        const videoPrefix = initMode === 'bao' ? 'BAO_LSS' : 'LSS';
+                        const fname = `${videoPrefix}_visualization_${res}_${speedLabel}_${zRange}${gasLabel}${splitLabel}.${rec.fileExtension}`;
+                        await rec.stop(fname, (progress) => {
+                            setRecProgress((prev) => ({ ...prev, phase: progress.phase, detail: progress.detail }));
+                        });
+                    } catch (e) {
+                        console.error('[Recording] Error during stop/save:', e);
+                        rec.cleanup();
+                    }
+                }
+                recorderRef.current = null;
+
+                // Restore canvas size if changed for 720p/1080p
+                const saved = savedCanvasSizeRef.current;
+                if (saved) {
+                    savedCanvasSizeRef.current = null;
+                    setCanvasSize(saved);
+                }
+
+                // Reset to z=10
+                const minT = cosmologyLUT.minTime;
+                simulationTimeRef.current = minT;
+                setCosmicTime(minT);
+                resetPhysics();
+                if (splitScreen) resetPhysicsB();
+
+                setIsRecording(false);
+                setRecProgress(null);
+                setRenderTrigger(t => t + 1);
+            };
+
+            const stopRecording = () => {
+                // If still pending (canvas resize in progress), cancel
+                if (pendingRecRef.current) {
+                    pendingRecRef.current = null;
+                    isRecordingRef.current = false;
+                    setIsRecording(false);
+                    setRecProgress(null);
+                    const saved = savedCanvasSizeRef.current;
+                    if (saved) { savedCanvasSizeRef.current = null; setCanvasSize(saved); }
+                    setRenderTrigger(t => t + 1);
+                    return;
+                }
+                // Signal the loop to stop sim frames -> loop adds 3s hold -> saves
+                recStopRequestedRef.current = true;
+            };
+
+            const handleRecordToggle = () => {
+                if (isRecording) {
+                    stopRecording();
+                } else {
+                    startRecording();
+                }
+            };
+
+            const handleMouseDown = (e) => {
+                const rect = document.getElementById('app-container').getBoundingClientRect();
+                const x = e.clientX - rect.left - SIDEBAR_W;
+                const y = e.clientY - rect.top;
+                if (sculptActive) {
+                    rulerRef.current.isSculpting = true;
+                    rulerRef.current.mouse = {x, y};
+                    return;
+                }
+                if(!rulerActive) return;
+                if (!rulerRef.current.start) {
+                    rulerRef.current.start = {x, y};
+                    rulerRef.current.current = {x, y};
+                } else {
+                    const dx = x - rulerRef.current.start.x;
+                    const dy = y - rulerRef.current.start.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist < 5) {
+                        rulerRef.current.start = null;
+                        rulerRef.current.current = null;
+                    } else {
+                        rulerRef.current.start = {x, y};
+                        rulerRef.current.current = {x, y};
+                    }
+                }
+            };
+            const handleMouseMove = (e) => {
+                const rect = document.getElementById('app-container').getBoundingClientRect();
+                const x = e.clientX - rect.left - SIDEBAR_W;
+                const y = e.clientY - rect.top;
+                if (sculptActive && rulerRef.current.isSculpting) {
+                    rulerRef.current.mouse = {x, y};
+                    return;
+                }
+                if(!rulerActive || !rulerRef.current.start) return;
+                rulerRef.current.current = {x, y};
+            };
+            const handleMouseUp = () => {
+                if (sculptActive) {
+                    rulerRef.current.isSculpting = false;
+                    rulerRef.current.mouse = null;
+                }
+            };
+
+            const handleShowCorrelation = () => {
+                if (showCorrelation) {
+                    setShowCorrelation(false);
+                } else {
+                    setShowCorrelation(true);
+                    setShowVoidProfile(false);
+                    setShowDensityPDF(false);
+                }
+            };
+
+            const handleShowVoidProfile = () => {
+                if (showVoidProfile) {
+                    setShowVoidProfile(false);
+                } else {
+                    setShowVoidProfile(true);
+                    setShowCorrelation(false);
+                    setShowDensityPDF(false);
+                }
+            };
+
+            const handleShowDensityPDF = () => {
+                if (showDensityPDF) {
+                    setShowDensityPDF(false);
+                } else {
+                    setShowDensityPDF(true);
+                    setShowCorrelation(false);
+                    setShowVoidProfile(false);
+                }
+            };
+
+            useEffect(() => {
+                const handleResize = () => {
+                    if (isRecordingRef.current) return; // Don't resize during recording
+                    setCanvasSize({ w: window.innerWidth - SIDEBAR_W, h: window.innerHeight });
+                };
+                window.addEventListener('resize', handleResize);
+                return () => window.removeEventListener('resize', handleResize);
+            }, []);
+
+            // Handle deferred recording start after canvas resize (720p/1080p)
+            useEffect(() => {
+                if (!pendingRecRef.current) return;
+                const info = pendingRecRef.current;
+                pendingRecRef.current = null;
+                // Canvas resized, ICs regenerated — start recording from z=10
+                const minT = cosmologyLUT.minTime;
+                simulationTimeRef.current = minT;
+                setCosmicTime(minT);
+                resetPhysics();
+                if (splitScreen) resetPhysicsB();
+                setTimeout(() => {
+                    actualStartRecording(minT, info.speedLabel, info.gasLabel || '');
+                }, 300);
+            }, [canvasSize]);
+
+            useEffect(() => {
+                let animationFrameId;
+                let frameCount = 0;
+                let cancelled = false;
+
+                const render = async () => {
+                    if (cancelled) return;
+                    // Expose render function so recording loop can schedule individual frames
+                    recRenderFnRef.current = render;
+
+                    // Guard: at least Panel A must be ready
+                    if (!uiCanvasRef.current || !webglCanvasRef.current || !glRef.current || !programRef.current) {
+                        if (!cancelled) animationFrameId = requestAnimationFrame(render);
+                        return;
+                    }
+
+                    if (isPlaying && !isRecordingRef.current) {
+                        let next = simulationTimeRef.current + simDeltaT;
+                        if (next >= 1.0) {
+                            next = 1.0;
+                            setCosmicTime(1.0);
+                            setIsPlaying(false);
+                        } else {
+                            simulationTimeRef.current = next;
+                            if (frameCount % 3 === 0) setCosmicTime(next);
+                        }
+                    }
+                    frameCount++;
+
+                    // --- Determine panel count ---
+                    const panelCount = splitScreen ? 2 : 1;
+
+                    // Compute reference redshift from Panel A for synchronization
+                    const { z: refZ } = getValuesAtTime(simulationTimeRef.current, cosmologyLUT);
+
+                    // --- Process each panel ---
+                    for (let panelIdx = 0; panelIdx < panelCount; panelIdx++) {
+                    const isB = panelIdx === 1;
+
+                    // Select rendering contexts for this panel (shadow outer vars)
+                    const canvas = isB ? uiCanvasRefB.current : uiCanvasRef.current;
+                    const glCanvas = isB ? webglCanvasRefB.current : webglCanvasRef.current;
+                    const gl = isB ? glRefB.current : glRef.current;
+                    const program = isB ? programRefB.current : programRef.current;
+                    const panelBuffers = isB ? buffersRefB.current : buffersRef.current;
+                    const panelWebglData = isB ? webglDataRefB.current : webglDataRef.current;
+
+                    if (!canvas || !glCanvas || !gl || !program || !panelBuffers || !panelBuffers.position) continue;
+
+                    const ctx = canvas.getContext('2d');
+                    const cWidth = canvas.width;
+                    const cHeight = canvas.height;
+
+                    // Select cosmology for this panel
+                    const pOm = isB ? omegaMB : omegaM;
+                    const pOl = isB ? omegaLB : omegaL;
+                    const pW0 = isB ? w0B : w0;
+                    const pWa = isB ? waB : wa;
+                    const pLUT = isB ? (cosmologyLUTB || cosmologyLUT) : cosmologyLUT;
+
+                    // Select physics state for this panel
+                    const pLD = isB ? localDynamicsB.current : localDynamics.current;
+                    const pPosRef = isB ? posRefB : posRef;
+                    const pHeadRef = isB ? headRefB : headRef;
+                    const pNextRef = isB ? nextRefB : nextRef;
+                    const pTrailHistory = isB ? trailHistoryB.current : trailHistory.current;
+                    const pVoronoiDataRef = isB ? voronoiDataRefB : voronoiDataRef;
+                    const pWorkerRef = isB ? workerRefB : workerRef;
+                    const pIsWorkerBusy = isB ? isWorkerBusyB : isWorkerBusy;
+                    const pLastCalcParamsRef = isB ? lastCalcParamsRefB : lastCalcParamsRef;
+                    const pTracerForces = isB ? tracerForcesB : tracerForces;
+                    const pTracerForces2 = isB ? tracerForces2B : tracerForces2;
+                    const pBaoRadiusPx = isB ? BAO_RADIUS_PX_B : BAO_RADIUS_PX;
+                    const pBaoRadiusMpc = isB ? BAO_RADIUS_MPC_B : BAO_RADIUS_MPC;
+                    const pCosmoMode = isB ? cosmoModeB : cosmoMode;
+
+                    // Synchronized redshift: Panel B uses Panel A's z, mapped through its own LUT
+                    let currentZ, growthD;
+                    if (isB && splitScreen) {
+                        const result = getValuesAtRedshift(refZ, pLUT);
+                        currentZ = result.z;
+                        growthD = result.D;
+                    } else {
+                        const result = getValuesAtTime(simulationTimeRef.current, pLUT);
+                        currentZ = result.z;
+                        growthD = result.D;
+                    }
+
+                    // P(k) mode: use linear growth factor D(t) directly (no gamma boost).
+                    // The E&H transfer function + Abel projection now produce
+                    // well-calibrated 2D displacements at all FoV scales.
+
+                    // Both P(k) and hybrid-BAO modes now produce displacements
+                    // in the same physical-pixel convention → rawScale = 1/120 always.
+                    const rawScale = RAW_SCALE_UNIFIED;
+                    const densityFactor = Math.pow(pOm / 0.3, 0.6);
+                    const dispScale = growthD * DISP_SCALE_FACTOR * Math.min(1.0, rawScale) * densityFactor;
+                    // 2LPT: D_2(t) ~ -3/7 * D_1(t)^2  (Einstein-de Sitter approx.)
+                    const disp2Scale = (-3 / 7) * growthD * dispScale;
+
+                    const virialScale = 0.2 * growthD;
+                    const expansionRate = getHubbleFactor(currentZ, pOm, pOl, pW0, pWa);
+                    // Hubble drag: comoving EOM has friction term 2*H(z)*v
+                    // Physically: v *= exp(-2 * E(z) * ageZero * simDeltaT)
+                    // ageZero = H0*t0 maps normalized sim-time to Hubble units
+                    // The BASE constant is empirically calibrated above the
+                    // pure physical value to account for unresolved sub-grid
+                    // velocity dispersion damping (physical drag alone is too weak
+                    // for the ~500 time steps spanning z=10 to z=0 in our sim).
+                    // Cosmology scaling: ageZero varies ~30% (EdS 0.667 → LCDM 0.964)
+                    const ageZero = pLUT.ageZero || REFERENCE_AGE_ZERO;
+                    // Disable Hubble drag in sculpt mode: pure gravity + softening only
+                    const isSculpting = !isB && sculptActive && simulationTimeRef.current >= 0.99;
+                    const hubbleDrag = isSculpting ? 1.0 : Math.exp(-2.0 * expansionRate * HUBBLE_DRAG_BASE * (ageZero / REFERENCE_AGE_ZERO) * simDeltaT / REFERENCE_DT);
+
+                    let physX, physY;
+
+                    if (pLD.initialized) {
+                        const { offsets, velocities, gravityForces, prevGravForces, densities, smoothedDensities, crossingAccum } = pLD;
+                        const N = tracersPerPanel;
+
+                        const gpuGravity = gpuGravityRef.current;
+                        const willUseGPU = useGPU && gpuGravity && gpuGravity.available;
+                        // Density coloring always uses 3x3 (9 cells) for consistency in density between CPU & GPU
+                        const gp = computeGridParams(N, SIM_W, SIM_H, 9);
+                        const { cellSize, gridW, gridH, gridSize, meanDensity, densityThreshold } = gp;
+
+                        if (pHeadRef.current.length !== gridSize) pHeadRef.current = new Int32Array(gridSize);
+                        if (pNextRef.current.length !== N) pNextRef.current = new Int32Array(N);
+
+                        const head = pHeadRef.current;
+                        const next = pNextRef.current;
+
+                        physX = pPosRef.current.x;
+                        physY = pPosRef.current.y;
+
+                        const doPhysics = (isPlaying || isRecordingRef.current) && enableLocalGravity;
+
+                        // ============================================================
+                        // LEAPFROG KDK (Kick-Drift-Kick) integration
+                        // Step 1: Half-kick with PREVIOUS step's gravity forces
+                        // Step 2: Drift (integrate velocities into offsets)
+                        // Step 3: Update positions + build grid
+                        // Step 4: Compute gravity at new positions -> new forces
+                        // Step 5: Half-kick with NEW forces
+                        // ============================================================
+
+                        // STEP 1: HALF-KICK (previous forces)
+                        if (doPhysics) {
+                            applyHalfKick(velocities, gravityForces, N);
+                        }
+
+                        // STEP 2: DRIFT (drag + clamp + offset update)
+                        if (doPhysics) {
+                            integrateVelocities(velocities, offsets, hubbleDrag, N);
+                            pVoronoiDataRef.current = null;
+                        }
+
+                        // SCULPTING LOGIC (Panel A only)
+                        if (!isB && sculptActive && rulerRef.current.isSculpting && rulerRef.current.mouse && simulationTimeRef.current >= 0.99) {
+                            applySculpting(
+                                rulerRef.current.mouse.x, rulerRef.current.mouse.y, 150,
+                                N, initialTracers, pTracerForces, pTracerForces2, offsets, dispScale, disp2Scale, SIM_W, SIM_H
+                            );
+                            pVoronoiDataRef.current = null;
+                        }
+
+                        // STEP 3: UPDATE POSITIONS + BUILD GRID
+                        updatePositionsAndBuildGrid(
+                            N, initialTracers, pTracerForces, pTracerForces2, offsets, crossingAccum,
+                            dispScale, growthD, rawScale, densityFactor,
+                            SIM_W, SIM_H, physX, physY, cellSize, gridW, gridH, head, next,
+                            useAdhesion
+                        );
+
+                        // RECORD TRAILS
+                        if ((isPlaying || isRecordingRef.current) && (Date.now() % 50 < 20) && trailPercentage > 0) {
+                            recordTrails(N, initialTracers, physX, physY, virialScale, pTrailHistory, trailPercentage, SIM_W, SIM_H);
+                        }
+
+                        // STEP 4: COMPUTE GRAVITY -> new forces
+                        // G_eff = G_base * f(a) * (dt/dt_ref) * (N_ref/N)
+                        //   f(a) = Omega_m(a)^0.55: growth-rate scaling (Linder 2005, Cosmic Growth History and Expansion History: https://arxiv.org/pdf/astro-ph/0507263)
+                        //          encodes both matter density and dark energy suppression
+                        //          in a single physically-motivated factor
+                        //   dt scaling:  keeps total impulse constant across timestep choices
+                        //   N scaling:   mimics m = M_total/N (mass per tracer)
+                        const a_current = 1.0 / (1.0 + currentZ);
+                        const OmA = pOm * Math.pow(a_current, -3) / (expansionRate * expansionRate);
+                        const gravScale = Math.pow(OmA, 0.55);
+                        const effectiveGravity = GRAVITY_BASE_STRENGTH
+                            * gravScale
+                            * (simDeltaT / REFERENCE_DT)
+                            * (REFERENCE_TRACER_COUNT / N);
+                        let usedGPU = false;
+                        if (willUseGPU) {
+                            try {
+                                const isSyncMode = isRecordingRef.current || splitScreen;
+                                const gpuSearchRadius = 4;
+                                const gpuResult = await gpuGravity.compute(
+                                    physX, physY, pTracerForces, N,
+                                    {
+                                        simW: SIM_W, simH: SIM_H,
+                                        cellSize, gridW, gridH,
+                                        effectiveGravity,
+                                        doPhysics,
+                                        searchRadius: gpuSearchRadius,
+                                        maxDistSq: cellSize * cellSize * (gpuSearchRadius * gpuSearchRadius),
+                                        softeningLengthSq: SOFTENING_LENGTH_SQ,
+                                        shellCrossingRadiusSq: SHELL_CROSSING_RADIUS_SQ
+                                    },
+                                    isSyncMode
+                                );
+                                if (cancelled) return;
+                                if (gpuResult) {
+                                    processGPUGravityResult(gpuResult, N, densities, crossingAccum, gravityForces, densityThreshold, doPhysics, simDeltaT / REFERENCE_DT);
+                                    usedGPU = true;
+                                }
+                            } catch (e) {
+                                // GPU error -- fall through to CPU
+                            }
+                        }
+
+                        // CPU fallback
+                        if (!usedGPU) {
+                            computeCPUGravity(
+                                N, physX, physY, head, next, pTracerForces,
+                                gridW, gridH, cellSize, SIM_W, SIM_H,
+                                densities, crossingAccum, gravityForces,
+                                densityThreshold, effectiveGravity, doPhysics, simDeltaT / REFERENCE_DT
+                            );
+                        }
+
+                        // TEMPORAL SMOOTHING (density)
+                        smoothDensities(densities, smoothedDensities, N, isPlaying || isRecordingRef.current);
+
+                        // FORCE TEMPORAL SMOOTHING: average with previous step
+                        if (doPhysics) {
+                            smoothForces(gravityForces, prevGravForces, N);
+                        }
+
+                        // STEP 5: HALF-KICK (new forces)
+                        if (doPhysics) {
+                            applyHalfKick(velocities, gravityForces, N);
+                        }
+                    }
+
+                    // --- DRAWING: Clear this panel's canvases ---
+                    gl.viewport(0, 0, cWidth, cHeight);
+                    gl.clearColor(0, 0, 0, 1);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    ctx.clearRect(0, 0, cWidth, cHeight);
+
+                    let pSmoothedDensities = null;
+                    let pMeanDensity = 0;
+
+                    if (showTracers && physX) {
+                        const { densities, smoothedDensities, crossingAccum: pCrossing, thermalPhases: pThermalPhases } = pLD;
+                        pSmoothedDensities = smoothedDensities;
+                        const N = tracersPerPanel;
+
+                        // Update resolution uniform for this panel's coordinate system
+                        const resLoc = gl.getUniformLocation(program, "u_resolution");
+                        gl.uniform2f(resLoc, SIM_W, SIM_H);
+
+                        // Density coloring always uses 3x3 (9 cells) for consistency
+                        const gridSide = Math.floor(Math.sqrt(N));
+                        const safeGridSide = Math.min(2000, Math.max(10, gridSide));
+                        const maxDim = Math.max(SIM_W, SIM_H);
+                        const cellSize = Math.max(2, maxDim / safeGridSide);
+                        const gridW = Math.ceil(SIM_W / cellSize);
+                        const gridH = Math.ceil(SIM_H / cellSize);
+                        const meanDensity = (tracersPerPanel / (gridW * gridH)) * 9;
+                        pMeanDensity = meanDensity;
+
+                        const simW = SIM_W | 0;
+                        const simH = SIM_H | 0;
+                        const area = cWidth * cHeight;
+                        const avgSeparation = Math.sqrt(area / N);
+                        const dynamicBaseSize = avgSeparation * 0.8 * 1.0;
+
+                        const wbColors = panelWebglData.colors;
+                        const wbSizes = panelWebglData.sizes;
+                        const wbPositions = panelWebglData.positions;
+
+                        // --- Thermal scatter: physically-modulated display-time offset ---
+                        // Advance persistent phases and compute per-particle offsets
+                        // Disabled in sculpt mode for clean gravity-only dynamics
+                        const isSculptingNow = !isB && sculptActive && simulationTimeRef.current >= 0.99;
+                        if (!isSculptingNow) {
+                            const thermalGrowthRate = Math.pow(
+                                pOm * Math.pow(1.0 + currentZ, 3) / Math.max(1e-6, expansionRate * expansionRate), 0.55
+                            );
+                            const thermalDt = (isPlaying || isRecordingRef.current) ? simDeltaT : 0;
+                            computeThermalScatter(
+                                N, pThermalPhases, smoothedDensities, pCrossing, pTracerForces,
+                                virialScale, thermalGrowthRate, thermalDt, meanDensity
+                            );
+                        } else {
+                            // Zero out thermal offsets so particles show true positions
+                            for (let i = 0; i < N; i++) {
+                                pThermalPhases[N + i * 2] = 0;
+                                pThermalPhases[N + i * 2 + 1] = 0;
+                            }
+                        }
+
+                        // FILL BUFFERS
+                        for (let i = 0; i < N; i++) {
+                            const coldPx = physX[i];
+                            const coldPy = physY[i];
+                            // Read pre-computed thermal offset from phase array (packed after phases)
+                            const thermalX = pThermalPhases[N + i * 2];
+                            const thermalY = pThermalPhases[N + i * 2 + 1];
+                            let px = ((coldPx + thermalX) % simW + simW) % simW;
+                            let py = ((coldPy + thermalY) % simH + simH) % simH;
+
+                            wbPositions[i*2] = px;
+                            wbPositions[i*2+1] = py;
+
+                            if (showGas) {
+                                const density = smoothedDensities[i] || 1;
+                                const ratio = density / (meanDensity || 1);
+
+                                let colIdx = (Math.pow(ratio, 0.75) * 100) | 0;
+                                if (colIdx >= COLOR_LUT_SIZE) colIdx = COLOR_LUT_SIZE - 1;
+
+                                // Color (Gas LUT)
+                                wbColors[i*4] = GAS_LUT_RGB[colIdx*3];     // R
+                                wbColors[i*4+1] = GAS_LUT_RGB[colIdx*3+1]; // G
+                                wbColors[i*4+2] = GAS_LUT_RGB[colIdx*3+2]; // B
+
+                                // Opacity logic moved to shader/blend, but we can pass alpha
+                                const opacity = Math.min(0.8, 0.15 / (ratio + 0.1) + (ratio * 0.1));
+                                wbColors[i*4+3] = opacity;
+
+                                // Size
+                                wbSizes[i] = Math.max(0.5, dynamicBaseSize / Math.pow(ratio + 0.5, 0.6)) * 4.0; // Scale up for visual match
+                            } else {
+                                const density = densities[i] || 1;
+                                const ratio = density / (meanDensity || 1);
+                                let colIdx = (Math.pow(ratio, 0.75) * 100) | 0;
+                                if (colIdx >= COLOR_LUT_SIZE) colIdx = COLOR_LUT_SIZE - 1;
+
+                                wbColors[i*4] = DENSITY_LUT_RGB[colIdx*3];
+                                wbColors[i*4+1] = DENSITY_LUT_RGB[colIdx*3+1];
+                                wbColors[i*4+2] = DENSITY_LUT_RGB[colIdx*3+2];
+                                wbColors[i*4+3] = 1.0;
+                                wbSizes[i] = 1.0;
+                            }
+                        }
+
+                        // UPLOAD TO GPU
+                        // Positions
+                        gl.bindBuffer(gl.ARRAY_BUFFER, panelBuffers.position);
+                        gl.bufferData(gl.ARRAY_BUFFER, wbPositions, gl.DYNAMIC_DRAW);
+                        const posLoc = gl.getAttribLocation(program, "a_position");
+                        gl.enableVertexAttribArray(posLoc);
+                        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+                        // Colors
+                        gl.bindBuffer(gl.ARRAY_BUFFER, panelBuffers.color);
+                        gl.bufferData(gl.ARRAY_BUFFER, wbColors, gl.DYNAMIC_DRAW);
+                        const colLoc = gl.getAttribLocation(program, "a_color");
+                        gl.enableVertexAttribArray(colLoc);
+                        gl.vertexAttribPointer(colLoc, 4, gl.FLOAT, false, 0, 0);
+
+                        // Sizes
+                        gl.bindBuffer(gl.ARRAY_BUFFER, panelBuffers.size);
+                        gl.bufferData(gl.ARRAY_BUFFER, wbSizes, gl.DYNAMIC_DRAW);
+                        const sizeLoc = gl.getAttribLocation(program, "a_size");
+                        gl.enableVertexAttribArray(sizeLoc);
+                        gl.vertexAttribPointer(sizeLoc, 1, gl.FLOAT, false, 0, 0);
+
+                        // Uniforms
+                        const isGasLoc = gl.getUniformLocation(program, "u_is_gas");
+                        gl.uniform1i(isGasLoc, showGas ? 1 : 0);
+
+                        // DRAW PASS 1
+                        if (showGas) {
+                            gl.enable(gl.BLEND);
+                            gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // Screen/Additive-ish blend
+                        } else {
+                            gl.disable(gl.BLEND);
+                        }
+
+                        gl.drawArrays(gl.POINTS, 0, N);
+
+                    }
+
+
+                    // --- DRAWING: UI LAYER (Layer 1 - Canvas 2D) ---
+                    ctx.save(); // for composite ops
+
+                    // --- VORONOI / VOID RENDERING (VIA WORKER) ---
+                    if ((showVoronoi || showVoids) && physX && !isPlaying) {
+                        const paramsChanged = (
+                            pLastCalcParamsRef.current.minVoidRadius !== minVoidRadius ||
+                            pLastCalcParamsRef.current.voidThreshold !== voidThreshold
+                        );
+
+                        if ((!pVoronoiDataRef.current || paramsChanged) && !pIsWorkerBusy.current && pWorkerRef.current) {
+                            pIsWorkerBusy.current = true;
+                            pLastCalcParamsRef.current = { minVoidRadius, voidThreshold };
+
+                            const minVoidRadiusPx = minVoidRadius * pxPerMpc;
+
+                            pWorkerRef.current.postMessage({
+                                physX: physX,
+                                physY: physY,
+                                N: tracersPerPanel,
+                                width: SIM_W,
+                                height: SIM_H,
+                                showVoids: showVoids,
+                                voidThreshold: voidThreshold,
+                                minVoidRadiusPx: minVoidRadiusPx
+                            });
+                        }
+
+                        const data = pVoronoiDataRef.current;
+                        if (data) {
+                            drawVoidOverlay(ctx, data, {
+                                tracersPerPanel, physX, physY, voidThreshold,
+                                showVoronoi, showVoids, SIM_W, SIM_H, voidCenterMode
+                            });
+                        }
+                    } else {
+                        if (isPlaying || (!showVoronoi && !showVoids)) {
+                            pVoronoiDataRef.current = null;
+                        }
+                    }
+
+                    if (showDensity && initMode === 'bao') {
+                        drawDensityField(ctx, centers, pBaoRadiusPx, growthD, numCircles, SIM_W, SIM_H);
+                    }
+
+                    drawTrails(ctx, {
+                        physX, physY, initialTracers, tracerForces: pTracerForces,
+                        tracerForces2: pTracerForces2,
+                        trailHistory: pTrailHistory, velocities: pLD.velocities,
+                        tracersPerPanel, trailPercentage, trailMode,
+                        SIM_W, SIM_H, virialScale, isPlaying, enableLocalGravity,
+                        rawScale, densityFactor, dispScale, disp2Scale
+                    });
+                    ctx.restore();
+
+                    if (showInitialOverlay) {
+                        // Compute start-time displacement scales using the same formula
+                        // as updatePositionsAndBuildGrid, evaluated at z=10 (LUT minTime).
+                        const startResult = getValuesAtTime(pLUT.minTime, pLUT);
+                        const startD1 = startResult.D;
+                        const startDispScale2 = startD1 * DISP_SCALE_FACTOR * Math.min(1.0, rawScale) * densityFactor;
+                        const startDisp2Scale2 = (-3 / 7) * startD1 * startDispScale2;
+                        drawInitialOverlay(ctx, initialTracers, pTracerForces, pTracerForces2,
+                            tracersPerPanel, SIM_W, SIM_H, startDispScale2, startDisp2Scale2);
+                    }
+
+                    if (rulerActive && rulerRef.current.start && rulerRef.current.current) {
+                        drawRuler(ctx, rulerRef.current.start, rulerRef.current.current, pxPerMpc);
+                    }
+
+                    // --- STATS CHART (Correlation or Void Profile) ---
+                    let corrCenters = centers;
+
+
+                    // GPU correlation: fire-and-forget compute; use previous frame's result for drawing.
+                    // We never await inside the render loop to keep chart drawing synchronous.
+                    // Skip GPU pair-counting in P(k) mode — power spectrum uses FFT instead.
+                    // Per-panel GPU correlation refs
+                    const pGpuCorrResult = isB ? gpuCorrResultRefB : gpuCorrResultRef;
+                    const pGpuCorrInFlight = isB ? gpuCorrInFlightRefB : gpuCorrInFlightRef;
+
+                    if (showCorrelation && initMode !== 'pk' && physX && useGPU && gpuCorrelationRef.current && gpuCorrelationRef.current.available && !pGpuCorrInFlight.current) {
+                        const corrBinSize = 8;
+                        const corrMaxDist = pBaoRadiusPx * 1.7;
+                        const corrNumBins = Math.ceil(corrMaxDist / corrBinSize);
+                        pGpuCorrInFlight.current = true;
+                        gpuCorrelationRef.current.compute(
+                            physX, physY, tracersPerPanel, corrCenters,
+                            corrBinSize, corrNumBins, corrMaxDist, SIM_W, SIM_H,
+                            false  // always use explicit center list
+                        ).then(result => {
+                            pGpuCorrResult.current = result;
+                            pGpuCorrInFlight.current = false;
+                        }).catch(() => {
+                            pGpuCorrInFlight.current = false;
+                        });
+                    }
+                    drawStatsChart(ctx, {
+                        showCorrelation, showVoidProfile, showDensityPDF, physX, physY, tracersPerPanel,
+                        centers: corrCenters, pBaoRadiusPx, pBaoRadiusMpc, pxPerMpc, SIM_W, SIM_H,
+                        voronoiData: pVoronoiDataRef.current, voidCenterMode, profileMode,
+                        gpuCorrHistogram: (showCorrelation && useGPU) ? pGpuCorrResult.current : null,
+                        gpuCorrNCenters: corrCenters ? corrCenters.length : 0,
+                        initMode, panelBoxMpc, panelId: panelIdx,
+                        smoothedDensities: pSmoothedDensities, meanDensity: pMeanDensity
+                    });
+
+                    if (showVoids && pVoronoiDataRef.current && pVoronoiDataRef.current.voidResults) {
+                        drawVoidStats(ctx, pVoronoiDataRef.current.voidResults, voidThreshold, minVoidRadius, pxPerMpc, SIM_W, SIM_H);
+                    }
+
+                    drawScaleBar(ctx, pxPerMpc, SIM_H, isSidebarCollapsed, isB);
+
+                    // --- Draw panel info box at divider edge, vertically centered ---
+                    if (splitScreen) {
+                        drawPanelInfoBox(ctx, {
+                            currentZ, pOm, pOl, pW0, pWa, pCosmoMode,
+                            pBaoRadiusMpc, isB, cWidth, cHeight
+                        });
+                    }
+                    } // end panel loop
+
+                    // During recording, the render loop does NOT self-schedule.
+                    // The recording loop calls render() directly for each frame.
+                    if (isRecordingRef.current) return;
+
+                    if (!cancelled) animationFrameId = requestAnimationFrame(render);
+                };
+
+                render();
+                return () => {
+                    cancelled = true;
+                    cancelAnimationFrame(animationFrameId);
+                };
+            }, [isPlaying, simDeltaT, omegaM, omegaL, w0, wa, showTracers, showGas, showDensity, showInitialOverlay, rulerActive, sculptActive, trailPercentage, trailMode, initialTracers, centers, tracerForces, tracerForcesB, tracerForces2, tracerForces2B, canvasSize, enableLocalGravity, numCircles, boxSizeMpc, BAO_RADIUS_MPC, BAO_RADIUS_MPC_B, BAO_RADIUS_PX_B, tracersPerPanel, isSidebarCollapsed, renderTrigger, cosmologyLUT, showCorrelation, showVoidProfile, showDensityPDF, showVoronoi, showVoids, voidThreshold, minVoidRadius, voidCenterMode, profileMode, splitScreen, omegaMB, omegaLB, w0B, waB, cosmologyLUTB, cosmoMode, cosmoModeB, initMode]);
+
+            return (
+                <div id="app-container" className={`${rulerActive ? 'cursor-crosshair' : ''} ${sculptActive ? 'cursor-grab' : ''}`}
+                     onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}>
+
+                    {/* --- Canvas panels --- */}
+                    <div style={{ position: 'absolute', top: 0, left: SIDEBAR_W, width: canvasSize.w, height: canvasSize.h, display: 'flex', flexDirection: 'row' }}>
+                        {/* Panel A */}
+                        <div style={{ position: 'relative', width: splitScreen ? panelW : canvasSize.w, height: canvasSize.h, flexShrink: 0 }}>
+                            <canvas ref={webglCanvasRef} width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}/>
+                            <canvas ref={uiCanvasRef} width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}/>
+                        </div>
+                        {/* Divider */}
+                        {splitScreen && (
+                            <div style={{ width: DIVIDER_WIDTH, height: canvasSize.h, background: 'rgba(255,255,255,0.35)', flexShrink: 0 }}/>
+                        )}
+                        {/* Panel B */}
+                        {splitScreen && (
+                            <div style={{ position: 'relative', width: panelW, height: canvasSize.h, flexShrink: 0 }}>
+                                <canvas ref={webglCanvasRefB} width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}/>
+                                <canvas ref={uiCanvasRefB} width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}/>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Recording overlay — transparent, shows simulation evolving */}
+                    {isRecording && (
+                        <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 40, pointerEvents: 'none' }}>
+                            {/* REC indicator — top-left, offset from sidebar */}
+                            <div style={{ position: 'absolute', top: 20, left: isSidebarCollapsed ? 80 : 410, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div className="animate-pulse" style={{ color: '#ef4444', fontSize: '16px', fontWeight: 'bold', textShadow: '0 0 8px rgba(0,0,0,0.9), 0 0 16px rgba(0,0,0,0.6)' }}>
+                                    ● REC
+                                </div>
+                            </div>
+                            {/* Progress bar + info — bottom center */}
+                            {recProgress && (
+                                <div style={{ position: 'absolute', bottom: 80, left: '50%', transform: 'translateX(-50%)', textAlign: 'center', background: 'rgba(0,0,0,0.6)', padding: '8px 16px', borderRadius: '8px', backdropFilter: 'blur(4px)' }}>
+                                    {recProgress.phase === 'encoding' ? (
+                                        <div style={{ color: '#fbbf24', fontSize: '13px', fontFamily: 'monospace' }}>
+                                            {recProgress.detail || 'Encoding video...'}
+                                        </div>
+                                    ) : (
+                                        <div style={{ color: '#fff', fontSize: '13px', fontFamily: 'monospace' }}>
+                                            Frame {recProgress.current} / {recProgress.total} ({Math.round(100 * recProgress.current / Math.max(1, recProgress.total))}%)
+                                            &nbsp;|&nbsp; z={recProgress.z.toFixed(2)}
+                                        </div>
+                                    )}
+                                    {recProgress.phase !== 'encoding' && (
+                                        <div style={{ marginTop: '4px', width: '220px', height: '4px', background: '#1e293b', borderRadius: '2px', overflow: 'hidden' }}>
+                                            <div style={{ width: `${100 * recProgress.current / Math.max(1, recProgress.total)}%`, height: '100%', background: '#3b82f6', borderRadius: '2px', transition: 'width 0.2s' }}></div>
+                                        </div>
+                                    )}
+                                    <div style={{ color: '#94a3b8', fontSize: '10px', marginTop: '4px' }}>
+                                        {recProgress.phase === 'encoding' ? 'Please wait…' : 'Press Stop to save partial video'}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    <div className={`control-panel absolute left-0 top-0 h-full flex flex-col shadow-2xl transition-all duration-300 ${isSidebarCollapsed ? 'w-16' : 'w-96'}`}>
+                        <div className={`p-4 border-b border-white/10 flex justify-between items-center ${isSidebarCollapsed ? 'flex-col gap-4 p-4' : ''}`}>
+                            <div className={isSidebarCollapsed ? 'hidden' : 'block'}>
+                                <div className="flex items-center gap-3">
+                                    <h1 className="text-xl font-bold text-blue-400">
+                                        Cosmic Web Explorer
+                                    </h1>
+                                    <button onClick={() => setTutorialStep(1)} className="px-2 py-0.5 bg-blue-600/20 text-blue-400 hover:bg-blue-600/40 hover:text-white rounded-full text-[10px] font-bold tracking-wide transition-colors border border-blue-500/30">
+                                        ? Guide
+                                    </button>
+                                </div>
+
+                                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                                    A qualitative visualization of cosmic evolution. {initMode === 'pk' ? 'From realistic Eisenstein & Hu P(k) initial conditions' : 'From idealized BAO initial conditions'}, cosmic expansion and gravity sculpt the Universe into a complex network of filaments and voids.
+                                    <span className="mt-1 block">
+                                        Initial concept by {authorNames[0]} & {authorNames[1]}. Developed by Nico Schuster.
+                                    </span>
+                                </p>
+
+                                <a
+                                    href="https://github.com/nicosmo/cosmic_web_explorer"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1.5 mt-2 text-xs text-slate-500 hover:text-white transition-colors group"
+                                >
+                                    <svg className="text-slate-600 group-hover:text-white transition-colors" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
+                                    <span className="border-b border-transparent group-hover:border-white/50 pb-0.5">Code and Documentation on GitHub </span>
+                                </a>
+                            </div>
+
+                            <button
+                                onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+                                className="group relative p-2 rounded hover:bg-white/10 text-slate-400 transition-colors"
+                            >
+                                {isSidebarCollapsed ? <ChevronRight size={20}/> : <ChevronLeft size={20}/>}
+
+                                {isSidebarCollapsed && (
+                                    <span className="absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-lg z-50">
+                                        Expand Settings
+                                    </span>
+                                )}
+
+                                {!isSidebarCollapsed && (
+                                    <span className="absolute right-full top-1/2 -translate-y-1/2 mr-3 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-lg z-50">
+                                        Minimize Settings
+                                    </span>
+                                )}
+                            </button>
+                        </div>
+
+                        {!isSidebarCollapsed && (
+                            <div className="flex-1 overflow-y-auto p-6 space-y-5 animate-in fade-in duration-300">
+                                <div className="space-y-3">
+                                    <div className="flex items-center gap-3 cursor-pointer select-none" onClick={() => setSecEvolution(!secEvolution)}>
+                                        <label className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 cursor-pointer">
+                                            <ChevronDown size={12} className={`transition-transform duration-200 ${secEvolution ? '' : '-rotate-90'}`}/> Evolution
+                                        </label>
+                                        <div className="flex gap-1 ml-auto" onClick={e => e.stopPropagation()}>
+                                            <TooltipWrapper text="Initializes the Universe with idealized Baryonic Acoustic Oscillation (BAO) rings. Tracers are displaced around manual BAO center points, then evolved with 1LPT + 2LPT. This artificially isolates the BAO sound horizon scale to clearly show how these structures evolve.">
+                                                <button
+                                                    onClick={() => { if (initMode !== 'bao') { setInitMode('bao'); handleRestart(); } }}
+                                                    className={`px-2.5 py-1 rounded text-[10px] font-bold transition-colors ${initMode === 'bao' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-500 hover:bg-slate-700 hover:text-slate-300'}`}
+                                                >
+                                                    BAO Init.
+                                                </button>
+                                            </TooltipWrapper>
+                                            <TooltipWrapper text="Initializes the Universe using the Eisenstein & Hu (1998) transfer function P(k) initial conditions. The 3D power spectrum is Abel-projected to 2D, then used to seed a Gaussian random field via FFT. Displacements are computed via Zel'dovich approximation (1LPT) + 2LPT, generating a realistic, multi-scale cosmic web.">
+                                                <button
+                                                    onClick={() => { if (initMode !== 'pk') { setInitMode('pk'); handleRestart(); } }}
+                                                    className={`px-2.5 py-1 rounded text-[10px] font-bold transition-colors ${initMode === 'pk' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-500 hover:bg-slate-700 hover:text-slate-300'}`}
+                                                >
+                                                    Realistic Init.
+                                                </button>
+                                            </TooltipWrapper>
+                                        </div>
+                                    </div>
+                                    {secEvolution && (
+                                    <div className="bg-slate-900/60 p-4 rounded-lg border border-white/10 animate-in fade-in duration-200">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-sm font-mono text-slate-300">Redshift z = {redshift.toFixed(2)}</span>
+                                            <span className="text-sm font-mono text-blue-400">{ageGyr.toFixed(2)} Gyr</span>
+                                        </div>
+                                        <TooltipWrapper text="Manually moving the slider evolves tracers only according to Lagrangian Perturbation Theory. For more accurate physics, click Play with 'Local Gravity' and 'Structure Sharpening' (see below) enabled.">
+                                            <input
+                                                type="range"
+                                                min={cosmologyLUT.minTime}
+                                                max="1.0"
+                                                step="0.001"
+                                                value={cosmicTime}
+                                                onChange={handleTimeSliderChange}
+                                                className="w-full accent-blue-500"
+                                            />
+                                        </TooltipWrapper>
+                                        <div className="flex justify-between text-[10px] text-slate-500 font-mono mt-1">
+                                            <span>Start (z=10)</span>
+                                            <span>Today (z=0)</span>
+                                        </div>
+                                        <div ref={playBtnRef} className="flex items-center gap-2 mt-2">
+                                            <button onClick={handlePlayToggle} disabled={isRecording} className={`flex-1 py-2.5 rounded flex items-center justify-center gap-1.5 text-sm font-semibold tracking-wide transition-colors ${isRecording ? 'bg-slate-800 text-slate-600 cursor-not-allowed' : isPlaying ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-blue-600 text-white hover:bg-blue-500'}`}>
+                                                {isPlaying && !isRecording ? (
+                                                    <><Pause size={14}/> Pause</>
+                                                ) : (!isPlaying && cosmicTime >= 1.0) ? (
+                                                    <><SkipBack size={14}/> Restart</>
+                                                ) : (
+                                                    <><Play size={14}/> Play</>
+                                                )}
+                                            </button>
+                                            <TooltipWrapper text={(() => { const isFixedRes = recordResolution !== 'window'; const startT = isFixedRes ? cosmologyLUT.minTime : cosmicTime; const steps = Math.ceil((1.0 - startT) / simDeltaT); const dur = ((steps + 30 + 90) / 30).toFixed(0); const { z: cZ } = getValuesAtTime(startT, cosmologyLUT); const from = isFixedRes ? 'z=10 (re-generates ICs at target resolution)' : `z=${cZ.toFixed(2)}`; const res = isFixedRes ? recordResolution : `${canvasSize.w}×${canvasSize.h} (window)`; const hasVE = (typeof VideoEncoder !== 'undefined'); const fmt = hasVE ? 'MP4 (H.264 via VideoEncoder)' : 'MP4 via ffmpeg.wasm (~25 MB download on first use; WebM fallback offline)'; return `Record from ${from}. ${steps} steps (~${dur}s video at 30fps, 1s+3s hold). Speed: ${getSpeedLabel()}, resolution: ${res}. Format: ${fmt}.`; })()}>
+                                                <button onClick={handleRecordToggle} className={`px-3 py-1.5 rounded flex items-center justify-center gap-1 text-xs transition-colors ${isRecording ? 'bg-red-600 text-white animate-pulse' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}>
+                                                    <Video size={14}/> {isRecording && recProgress ? `Stop (${Math.round(100 * recProgress.current / Math.max(1, recProgress.total))}%)` : isRecording ? 'Stop' : 'Rec'}
+                                                </button>
+                                            </TooltipWrapper>
+                                            <TooltipWrapper text="Download a high-resolution PNG capture of the current simulation view.">
+                                                <button onClick={takeScreenshot} className="px-3 py-1.5 rounded flex items-center justify-center gap-1 text-xs transition-colors bg-slate-700 text-slate-300 hover:bg-slate-600">
+                                                    <Camera size={14}/> Snap
+                                                </button>
+                                            </TooltipWrapper>
+                                            <TooltipWrapper text={`Export ${tracersPerPanel.toLocaleString()} tracer positions as CSV (Mpc/h, comoving, bottom-left origin). Includes full cosmology metadata.`}>
+                                                <button onClick={handleDataExport} className="px-3 py-1.5 rounded flex items-center justify-center gap-1 text-xs transition-colors bg-slate-700 text-slate-300 hover:bg-slate-600">
+                                                    <Download size={14}/> Data
+                                                </button>
+                                            </TooltipWrapper>
+                                        </div>
+                                        {isRecording && recProgress && (
+                                            <div className="mt-2 p-2 rounded bg-red-900/30 border border-red-500/30 text-xs space-y-1">
+                                                <div className="flex justify-between text-slate-300">
+                                                    <span className="font-mono">z = {recProgress.z.toFixed(2)}</span>
+                                                    <span className="font-mono">{recProgress.ageGyr.toFixed(2)} Gyr</span>
+                                                </div>
+                                                <div className="w-full h-1.5 bg-slate-800 rounded overflow-hidden">
+                                                    <div className="h-full bg-blue-500 rounded transition-all duration-200" style={{ width: `${100 * recProgress.current / Math.max(1, recProgress.total)}%` }}></div>
+                                                </div>
+                                                <div className="text-slate-500 text-center">
+                                                    {recProgress.current} / {recProgress.total} frames ({Math.round(100 * recProgress.current / Math.max(1, recProgress.total))}%)
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* dt Preset Buttons */}
+                                        <div className="mt-3 flex items-center gap-1">
+                                            <span className="text-xs text-slate-500 mr-1">Δt:</span>
+                                            {[
+                                                { label: 'Fast', dt: 0.004 },
+                                                { label: 'Normal', dt: 0.002 },
+                                                { label: 'HQ', dt: 0.001 },
+                                                { label: 'Ultra-HQ', dt: 0.0005 },
+                                            ].map(({ label, dt }) => {
+                                                const steps = Math.ceil((1.0 - cosmologyLUT.minTime) / dt);
+                                                const videoDuration = (steps / 30).toFixed(1);
+                                                return (
+                                                    <TooltipWrapper key={dt} text={`${steps} time steps to z=0 (~${videoDuration}s video at 30fps)`}>
+                                                        <button
+                                                            onClick={() => { setSimDeltaT(dt); handleRestart(); }}
+                                                            className={`px-2 py-0.5 text-[10px] rounded transition-colors ${simDeltaT === dt ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'}`}
+                                                        >
+                                                            {label}
+                                                        </button>
+                                                    </TooltipWrapper>
+                                                );
+                                            })}
+                                        </div>
+
+                                        {/* Recording Resolution */}
+                                        <div className="mt-2 flex items-center gap-1">
+                                            <span className="text-xs text-slate-500 mr-1">Rec:</span>
+                                            {[
+                                                { label: 'Window', value: 'window', tip: 'Records at your current browser window resolution, exactly what you see in live playback.' },
+                                                { label: '720p', value: '720p', tip: 'Records at 1280×720 (HD). Fixed 16:9 aspect ratio, framing may differ from live playback if the available browser window is not 16:9.' },
+                                                { label: '1080p', value: '1080p', tip: 'Records at 1920×1080 (Full HD). Fixed 16:9 aspect ratio, framing may differ from live playback if the available browser window is not 16:9.' },
+                                            ].map(({ label, value, tip }) => (
+                                                <TooltipWrapper key={value} text={tip}>
+                                                    <button
+                                                        onClick={() => setRecordResolution(value)}
+                                                        className={`px-2 py-0.5 text-[10px] rounded transition-colors ${recordResolution === value ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'}`}
+                                                    >
+                                                        {label}
+                                                    </button>
+                                                </TooltipWrapper>
+                                            ))}
+                                        </div>
+
+                                        <div className="mt-4 flex items-center justify-between border-t border-white/5 pt-3">
+                                            <span className="text-xs text-slate-400">Local Gravity (N-Body on {(gpuAvailable && useGPU) ? 'GPU' : 'CPU'})</span>
+                                            <TooltipWrapper text={(gpuAvailable && useGPU) ? 'GPU mode: circular 4-cell radius (49 cells), ~100px interaction range of 2D gravity (1/r force law). Async pipeline (1-frame latency).' : 'CPU mode: 3x3 cell search (9 cells), ~28px interaction range of 2D gravity (1/r force law).'} className="ml-2 cursor-help text-slate-500">
+                                                <div className="w-4 h-4 bg-slate-800 rounded-full flex items-center justify-center text-[10px]">?</div>
+                                            </TooltipWrapper>
+                                            {gpuAvailable && useGPU && (
+                                                <TooltipWrapper text="Switch to CPU-based gravity computation (shorter range)." className="ml-1">
+                                                    <button
+                                                        onClick={() => {
+                                                            setUseGPU(false);
+                                                            handleRestart();
+                                                        }}
+                                                        className="px-2 py-0.5 text-[10px] font-mono bg-slate-800 border border-slate-600 text-slate-400 rounded hover:text-white hover:border-blue-500 transition-colors"
+                                                    >
+                                                        → CPU
+                                                    </button>
+                                                </TooltipWrapper>
+                                            )}
+                                            {gpuAvailable && !useGPU && (
+                                                <TooltipWrapper text="Switch to GPU-based gravity computation." className="ml-1">
+                                                    <button
+                                                        onClick={() => {
+                                                            setUseGPU(true);
+                                                            handleRestart();
+                                                        }}
+                                                        className="px-2 py-0.5 text-[10px] font-mono bg-slate-800 border border-slate-600 text-slate-400 rounded hover:text-white hover:border-blue-500 transition-colors"
+                                                    >
+                                                        → GPU
+                                                    </button>
+                                                </TooltipWrapper>
+                                            )}
+                                            <label className="toggle-switch ml-auto">
+                                                <input type="checkbox" checked={enableLocalGravity} onChange={e => setEnableLocalGravity(e.target.checked)}/>
+                                                <span className="slider"></span>
+                                            </label>
+                                        </div>
+
+                                        <p className="text-[10px] text-slate-500 mt-1 italic">
+                                            *Local gravity only active during playback
+                                        </p>
+
+                                        <div className="mt-3 flex items-center justify-between border-t border-white/5 pt-3">
+                                            <span className="text-xs text-slate-400">Structure Sharpening</span>
+                                            <TooltipWrapper text="Phenomenological Adhesion model: damps particle displacement in dense, multi-streaming regions (shell-crossings) to prevent particles from overshooting through structures and to keep filaments sharp. When off, Zel'dovich + 2LPT displacements are applied without damping." className="ml-2 cursor-help text-slate-500">
+                                                <div className="w-4 h-4 bg-slate-800 rounded-full flex items-center justify-center text-[10px]">?</div>
+                                            </TooltipWrapper>
+                                            <label className="toggle-switch ml-auto">
+                                                <input type="checkbox" checked={useAdhesion} onChange={e => setUseAdhesion(e.target.checked)}/>
+                                                <span className="slider"></span>
+                                            </label>
+                                        </div>
+
+                                        <p className="text-[10px] text-slate-500 mt-1 italic">
+                                            *Structure sharpening only active during playback
+                                        </p>
+                                    </div>
+                                    )}
+                                </div>
+
+                                <div ref={cosmoRef} className="space-y-3">
+                                    <div className="flex items-center justify-between cursor-pointer select-none" onClick={() => setSecCosmology(!secCosmology)}>
+                                        <label className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 cursor-pointer">
+                                            <ChevronDown size={12} className={`transition-transform duration-200 ${secCosmology ? '' : '-rotate-90'}`}/> Cosmology {splitScreen && <span className="text-[10px] text-amber-400 font-normal ml-1">(Panel A)</span>}
+                                        </label>
+                                        <div className="flex items-center gap-2 cursor-pointer" onClick={e => { e.stopPropagation(); toggleFlat(); }}>
+                                            <span className="text-[10px] text-slate-400 uppercase">Flat Universe</span>
+                                            <div className={`w-8 h-4 rounded-full p-0.5 transition-colors ${isFlat ? 'bg-blue-600' : 'bg-slate-700'}`}>
+                                                <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${isFlat ? 'translate-x-4' : 'translate-x-0'}`}></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {secCosmology && (<>
+                                    <div className="p-3 bg-slate-900/60 rounded border border-white/10 space-y-4 animate-in fade-in duration-200">
+                                        <div className="btn-group mb-2">
+                                            <button className={cosmoMode === 'LCDM' ? 'active' : ''} onClick={() => handleCosmoModeChange('LCDM')}>ΛCDM</button>
+                                            <button className={cosmoMode === 'wCDM' ? 'active' : ''} onClick={() => handleCosmoModeChange('wCDM')}>wCDM</button>
+                                            <button className={cosmoMode === 'w0wa' ? 'active' : ''} onClick={() => handleCosmoModeChange('w0wa')}>w₀wₐ</button>
+                                        </div>
+
+                                        {(cosmoMode === 'wCDM' || cosmoMode === 'w0wa') && (
+                                            <div className="space-y-1 animate-in fade-in slide-in-from-top-1">
+                                                <div className="flex justify-between text-xs">
+                                                    <span className="text-slate-400">Eq. of State (w₀)</span>
+                                                    <span className="text-slate-200">{w0.toFixed(2)}</span>
+                                                </div>
+                                                <input type="range" min="-2.0" max="-0.33" step="0.01" value={w0} onChange={handleW0Change} className="w-full accent-amber-500"/>
+                                            </div>
+                                        )}
+
+                                        {cosmoMode === 'w0wa' && (
+                                            <div className="space-y-1 animate-in fade-in slide-in-from-top-1">
+                                                <div className="flex justify-between text-xs">
+                                                    <span className="text-slate-400">Evolution (wₐ)</span>
+                                                    <span className="text-slate-200">{wa.toFixed(2)}</span>
+                                                </div>
+                                                <input type="range" min="-1.0" max="1.0" step="0.01" value={wa} onChange={handleWaChange} className="w-full accent-amber-500"/>
+                                            </div>
+                                        )}
+
+                                        <div className="space-y-1">
+                                            <div className="flex justify-between text-xs">
+                                                <span className="text-slate-400">Matter (&Omega;<sub>m</sub>)</span>
+                                                <span className="text-slate-200">{omegaM.toFixed(2)}</span>
+                                            </div>
+                                            <input type="range" min="0.01" max="1.0" step="0.01" value={omegaM} onChange={handleOmegaMChange} className="w-full accent-purple-500"/>
+                                        </div>
+                                        <div className={`space-y-1 transition-opacity ${isFlat ? 'opacity-70' : 'opacity-100'}`}>
+                                            <div className="flex justify-between text-xs">
+                                                <span className="text-slate-400">Dark Energy (&Omega;<sub>&Lambda;</sub>)</span>
+                                                <span className="text-slate-200">{omegaL.toFixed(2)}</span>
+                                            </div>
+                                            <input type="range" min="0" max={isFlat ? "0.99" : "1.0"} step="0.01" value={omegaL} onChange={handleOmegaLChange} className={`w-full ${isFlat ? 'accent-slate-500 cursor-not-allowed' : 'accent-purple-500'}`}/>
+                                        </div>
+                                    </div>
+
+                                    {/* Split-Screen Comparison Toggle with Tooltip */}
+                                    <TooltipWrapper
+                                        text="Enable split-screen mode to run two independent simulations with different cosmological parameters side-by-side."
+                                        className="w-full"
+                                    >
+                                        <button
+                                            onClick={() => {
+                                                setSplitScreen(s => !s);
+                                                handleRestart();
+                                            }}
+                                            className={`w-full py-2 rounded text-xs font-medium flex items-center justify-center gap-1.5 transition-colors ${splitScreen ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                                        >
+                                            <Columns size={14} /> {splitScreen ? 'Exit Comparison' : 'Compare Cosmologies'}
+                                        </button>
+                                    </TooltipWrapper>
+
+                                    {/* Panel B Cosmology Controls */}
+                                    {splitScreen && (
+                                        <div className="space-y-3 animate-in fade-in slide-in-from-top-1">
+                                            <div className="flex items-center justify-between">
+                                                <label className="text-xs font-bold text-amber-400 uppercase tracking-widest">Panel B</label>
+                                                <div className="flex items-center gap-2 cursor-pointer" onClick={toggleFlatB}>
+                                                    <span className="text-[10px] text-slate-400 uppercase">Flat</span>
+                                                    <div className={`w-8 h-4 rounded-full p-0.5 transition-colors ${isFlatB ? 'bg-blue-600' : 'bg-slate-700'}`}>
+                                                        <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${isFlatB ? 'translate-x-4' : 'translate-x-0'}`}></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="p-3 bg-slate-900/60 rounded border border-amber-500/20 space-y-4">
+                                                <div className="btn-group mb-2">
+                                                    <button className={cosmoModeB === 'LCDM' ? 'active' : ''} onClick={() => handleCosmoModeChangeB('LCDM')}>ΛCDM</button>
+                                                    <button className={cosmoModeB === 'wCDM' ? 'active' : ''} onClick={() => handleCosmoModeChangeB('wCDM')}>wCDM</button>
+                                                    <button className={cosmoModeB === 'w0wa' ? 'active' : ''} onClick={() => handleCosmoModeChangeB('w0wa')}>w₀wₐ</button>
+                                                </div>
+
+                                                {(cosmoModeB === 'wCDM' || cosmoModeB === 'w0wa') && (
+                                                    <div className="space-y-1 animate-in fade-in slide-in-from-top-1">
+                                                        <div className="flex justify-between text-xs">
+                                                            <span className="text-slate-400">Eq. of State (w₀)</span>
+                                                            <span className="text-slate-200">{w0B.toFixed(2)}</span>
+                                                        </div>
+                                                        <input type="range" min="-2.0" max="-0.33" step="0.01" value={w0B} onChange={handleW0ChangeB} className="w-full accent-amber-500"/>
+                                                    </div>
+                                                )}
+
+                                                {cosmoModeB === 'w0wa' && (
+                                                    <div className="space-y-1 animate-in fade-in slide-in-from-top-1">
+                                                        <div className="flex justify-between text-xs">
+                                                            <span className="text-slate-400">Evolution (wₐ)</span>
+                                                            <span className="text-slate-200">{waB.toFixed(2)}</span>
+                                                        </div>
+                                                        <input type="range" min="-1.0" max="1.0" step="0.01" value={waB} onChange={handleWaChangeB} className="w-full accent-amber-500"/>
+                                                    </div>
+                                                )}
+
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between text-xs">
+                                                        <span className="text-slate-400">Matter (&Omega;<sub>m</sub>)</span>
+                                                        <span className="text-slate-200">{omegaMB.toFixed(2)}</span>
+                                                    </div>
+                                                    <input type="range" min="0.01" max="1.0" step="0.01" value={omegaMB} onChange={handleOmegaMChangeB} className="w-full accent-amber-500"/>
+                                                </div>
+                                                <div className={`space-y-1 transition-opacity ${isFlatB ? 'opacity-70' : 'opacity-100'}`}>
+                                                    <div className="flex justify-between text-xs">
+                                                        <span className="text-slate-400">Dark Energy (&Omega;<sub>&Lambda;</sub>)</span>
+                                                        <span className="text-slate-200">{omegaLB.toFixed(2)}</span>
+                                                    </div>
+                                                    <input type="range" min="0" max={isFlatB ? "0.99" : "1.0"} step="0.01" value={omegaLB} onChange={handleOmegaLChangeB} className={`w-full ${isFlatB ? 'accent-slate-500 cursor-not-allowed' : 'accent-amber-500'}`}/>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    </>)}
+                                </div>
+
+                                <div ref={toolsRef} className="space-y-3">
+                                    <label className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 cursor-pointer select-none" onClick={() => setSecTools(!secTools)}>
+                                        <ChevronDown size={12} className={`transition-transform duration-200 ${secTools ? '' : '-rotate-90'}`}/> View & Tools
+                                    </label>
+                                    {secTools && (
+                                    <div className="space-y-3 p-3 bg-slate-900/60 rounded border border-white/10 animate-in fade-in duration-200">
+
+                                        {/* VOID ANALYSIS SECTION */}
+                                        <div className="pb-3 border-b border-white/5">
+                                            <label className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 block">Void Analysis</label>
+                                            <div className="flex gap-2 mb-2">
+                                                <TooltipWrapper text="Display Voronoi tessellation cells. Low-density cells highlighted." className="flex-1">
+                                                    <button
+                                                        onClick={() => setShowVoronoi(!showVoronoi)}
+                                                        className={`w-full py-2 rounded text-xs flex items-center justify-center gap-1 ${showVoronoi ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                                                    >
+                                                        <Grid size={14} /> Voronoi
+                                                    </button>
+                                                </TooltipWrapper>
+                                                <TooltipWrapper text="Voronoi-based watershed void-finding from density minima, similar to the void finder VIDE. Density estimated as 1 / Voronoi cell area. Threshold controls coloring only. Centers are marked by X." className="flex-1">
+                                                    <button
+                                                        onClick={() => setShowVoids(!showVoids)}
+                                                        className={`w-full py-2 rounded text-xs flex items-center justify-center gap-1 ${showVoids ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                                                    >
+                                                        <Layers size={14} /> Identification
+                                                    </button>
+                                                </TooltipWrapper>
+
+                                                {showVoids && (
+                                                    <TooltipWrapper text="Stacked radial density profile (Using selected center definition).">
+                                                        <button
+                                                            onClick={handleShowVoidProfile}
+                                                            className={`w-full py-2 rounded text-xs flex items-center justify-center gap-1 ${showVoidProfile ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                                                        >
+                                                            <Circle size={14} /> Profile
+                                                        </button>
+                                                    </TooltipWrapper>
+                                                )}
+                                            </div>
+
+                                            {showVoids && (
+                                                <>
+                                                    <div className="space-y-1 mb-2">
+                                                        <div className="flex justify-between text-xs">
+                                                            <TooltipWrapper text="Cells with density below this threshold (in units of mean density) are classified as void regions and colored by void ID. Higher values include more cells in voids; lower values restrict voids to only the emptiest regions.">
+                                                                <span className="text-slate-400 cursor-help border-b border-dotted border-slate-600">Color Cutoff</span>
+                                                            </TooltipWrapper>
+                                                            <span className="text-slate-200">{voidThreshold.toFixed(2)}× mean density</span>
+                                                        </div>
+                                                        <input
+                                                            type="range"
+                                                            min="0.0"
+                                                            max="10.0"
+                                                            step="0.05"
+                                                            value={voidThreshold}
+                                                            onChange={e => setVoidThreshold(parseFloat(e.target.value))}
+                                                            className="w-full accent-rose-500"
+                                                        />
+                                                    </div>
+
+                                                    <div className="space-y-1 mb-2">
+                                                        <div className="flex justify-between text-xs">
+                                                            <span className="text-slate-400">Minimum Radius</span>
+                                                            <span className="text-slate-200">{minVoidRadius} Mpc</span>
+                                                        </div>
+                                                        <input
+                                                            type="range"
+                                                            min="0"
+                                                            max="30"
+                                                            step="1"
+                                                            value={minVoidRadius}
+                                                            onChange={e => setMinVoidRadius(parseInt(e.target.value))}
+                                                            className="w-full accent-rose-500"
+                                                        />
+                                                    </div>
+                                                </>
+                                            )}
+
+                                            {/* CENTER SELECTION */}
+                                            {showVoids && (
+                                                <div className="space-y-1">
+                                                    <span className="text-xs text-slate-400 block mb-1">Center Definition</span>
+                                                    <div className="btn-group">
+                                                        <TooltipWrapper text="Geometric center of the void boundary, often leading to slightly higher densities in the innermost regions and may not align with the point of lowest density." className="flex-1">
+                                                            <button
+                                                                className={voidCenterMode === 'geometric' ? 'active' : ''}
+                                                                onClick={() => setVoidCenterMode('geometric')}
+                                                            >
+                                                                Macrocenter
+                                                            </button>
+                                                        </TooltipWrapper>
+                                                        <TooltipWrapper text="Point of lowest density." className="flex-1">
+                                                            <button
+                                                                className={voidCenterMode === 'min' ? 'active' : ''}
+                                                                onClick={() => setVoidCenterMode('min')}
+                                                            >
+                                                                Min. Density
+                                                            </button>
+                                                        </TooltipWrapper>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {/* VOID PROFILE METHOD */}
+                                            {showVoids && showVoidProfile && (
+                                                <div className="space-y-1 mt-2 border-t border-white/5 pt-2">
+                                                    <span className="text-xs text-slate-400 block mb-1">Void Profile Method</span>
+                                                    <div className="btn-group">
+                                                        <TooltipWrapper text="Median of individual profiles. Best for removing outliers (e.g. contaminated voids)." className="flex-1">
+                                                            <button
+                                                                className={profileMode === 'median' ? 'active' : ''}
+                                                                onClick={() => setProfileMode('median')}
+                                                            >
+                                                                Median
+                                                            </button>
+                                                        </TooltipWrapper>
+                                                        <TooltipWrapper text="Volume-weighted stacking. Smooth curves, but dominated by largest voids." className="flex-1">
+                                                            <button
+                                                                className={profileMode === 'stacked' ? 'active' : ''}
+                                                                onClick={() => setProfileMode('stacked')}
+                                                            >
+                                                                Stack
+                                                            </button>
+                                                        </TooltipWrapper>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {(showVoronoi || showVoids) && isPlaying && (
+                                                <p className="text-[10px] text-amber-400 mt-2 italic">⚠ Pause simulation to view Voronoi/Voids</p>
+                                            )}
+                                        </div>
+
+                                        <div className="grid grid-cols-3 gap-2 pb-2 border-b border-white/5">
+                                            <TooltipWrapper text="Overlay original tracer positions at z=10.">
+                                                <button onClick={() => setShowInitialOverlay(!showInitialOverlay)} className={`w-full py-2 rounded text-xs flex items-center justify-center gap-1 ${showInitialOverlay ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>
+                                                    <Clock size={14}/> Start Pos
+                                                </button>
+                                            </TooltipWrapper>
+
+                                            <TooltipWrapper text="Measure comoving distances. Click start, click end. Double-click near start to clear.">
+                                                <button onClick={() => setRulerActive(!rulerActive)} className={`w-full py-2 rounded text-xs flex items-center justify-center gap-1 ${rulerActive ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>
+                                                    <Ruler size={14}/> Ruler
+                                                </button>
+                                            </TooltipWrapper>
+
+                                            <TooltipWrapper text="Sculpt Gravity Wells (z=0 only). Click and drag to attract tracers.">
+                                                <button
+                                                    disabled={cosmicTime < 1.0}
+                                                    onClick={() => setSculptActive(!sculptActive)}
+                                                    className={`w-full py-2 rounded text-xs flex items-center justify-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed ${sculptActive ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                                                >
+                                                    <Hand size={14}/> Sculpt
+                                                </button>
+                                            </TooltipWrapper>
+
+                                            <TooltipWrapper text={initMode === 'pk'
+                                                ? "Computes the 2D power spectrum P(k) of the current tracer distribution using a Cloud-in-Cell density grid. An implementation of Bluestein's FFT allows exact evaluation on non-power-of-2 grids to preserve boundary periodicity. Track the characteristic steepening of the power spectrum as non-linear structures form."
+                                                : "Cross-correlation of known BAO centers with CDM tracers. Measures the radial density profile around artificial BAO centers. Probes the idealized BAO signal rather than computing a true 2-point correlation function."
+                                            }>
+                                                <button
+                                                    onClick={handleShowCorrelation}
+                                                    className={`w-full py-2 rounded text-xs flex items-center justify-center gap-1 ${showCorrelation ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                                                >
+                                                    <TrendingUp size={14}/> {initMode === 'pk' ? 'P(k)' : '2-Pt Corr'}
+                                                </button>
+                                            </TooltipWrapper>
+
+                                            <TooltipWrapper text="Displays the distribution of the tracer density contrast δ = ρ/ρ̅ − 1, tracking the shift from symmetric linear Gaussian fluctuations to a heavily skewed shape due to non-linear clustering.">
+                                                <button
+                                                    onClick={handleShowDensityPDF}
+                                                    className={`w-full py-2 rounded text-xs flex items-center justify-center gap-1 ${showDensityPDF ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                                                >
+                                                    <BarChart2 size={14}/> ρ/ρ̅ Stats
+                                                </button>
+                                            </TooltipWrapper>
+
+                                            <TooltipWrapper text="Render tracers using a thermal color palette to approximate diffuse gas temperature, mapped to local density. Blue indicates cold, low-density voids, transitioning from white to red for hot, high-density clusters.">
+                                                <button
+                                                    onClick={() => setShowGas(!showGas)}
+                                                    className={`w-full py-2 rounded text-xs flex items-center justify-center gap-1 ${showGas ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                                                >
+                                                    <Wind size={14}/> Thermal
+                                                </button>
+                                            </TooltipWrapper>
+                                        </div>
+
+                                        <div className="space-y-1 mt-2">
+                                            <div className="flex justify-between text-xs">
+                                                <span className="text-slate-400">Field of View</span>
+                                                <span className="text-slate-200">{boxSizeMpc} Mpc</span>
+                                            </div>
+                                            <input type="range" min="500" max="3000" step="50" value={boxSizeMpc} onChange={(e) => {
+                                                setBoxSizeMpc(parseInt(e.target.value));
+                                                handleRestart();
+                                            }} className="w-full accent-teal-500"/>
+                                        </div>
+                                        {initMode === 'bao' && (
+                                        <div className="space-y-1">
+                                            <div className="flex justify-between text-xs">
+                                                <span className="text-slate-400">BAO Rings</span>
+                                                <span className="text-slate-200">{numCircles}</span>
+                                            </div>
+                                            <input type="range" min="1" max="200" step="1" value={numCircles} onChange={(e) => {
+                                                setNumCircles(parseInt(e.target.value));
+                                                handleRestart();
+                                            }} className="w-full accent-teal-500"/>
+                                        </div>
+                                        )}
+                                        <div className="space-y-1">
+                                            <div className="flex justify-between text-xs">
+                                                <span className="text-slate-400">CDM Tracers</span>
+                                                <span className="text-slate-200">{numTracers.toLocaleString()}</span>
+                                            </div>
+                                            <input type="range" min={Math.log10(20000)} max={Math.ceil(Math.log10(200000) * 100) / 100} step="0.01" value={Math.log10(numTracers)} onChange={(e) => {
+                                                let val = Math.round(Math.pow(10, parseFloat(e.target.value)));
+                                                const limit = 200000;
+                                                if (val > limit) val = limit;
+                                                setNumTracers(val);
+                                                handleRestart();
+                                            }} className="w-full accent-teal-500"/>
+                                        </div>
+
+                                        {initMode === 'bao' && (
+                                        <div className="mt-3 flex items-center justify-between">
+                                            <span className="text-xs text-slate-400">Show BAO density overlay</span>
+                                            <label className="toggle-switch scale-75 origin-right">
+                                                <input type="checkbox" checked={showDensity} onChange={e => setShowDensity(e.target.checked)}/>
+                                                <span className="slider"></span>
+                                            </label>
+                                        </div>
+                                        )}
+
+                                        <div className="mt-3 space-y-1">
+                                            <div className="flex justify-between text-xs items-center">
+                                                <span className="text-slate-400">Overlay Sample: {trailPercentage}% of {trailMode === 'history' ? 'Past Path' : 'Velocity Vectors'}</span>
+                                                <div className="flex items-center gap-1 bg-slate-800 rounded px-1">
+                                                    <TooltipWrapper text="Show past trajectory trails.">
+                                                        <button
+                                                            onClick={() => setTrailMode('history')}
+                                                            className={`p-1 rounded ${trailMode === 'history' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}
+                                                        >
+                                                            <Activity size={10}/>
+                                                        </button>
+                                                    </TooltipWrapper>
+                                                    <TooltipWrapper text="Show current velocity vectors, exaggerated for better visibility.">
+                                                        <button
+                                                            onClick={() => setTrailMode('vectors')}
+                                                            className={`p-1 rounded ${trailMode === 'vectors' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}
+                                                        >
+                                                            <TrendingUp size={10}/>
+                                                        </button>
+                                                    </TooltipWrapper>
+                                                </div>
+                                            </div>
+                                            <input type="range" min="0" max="100" step="1" value={trailPercentage} onChange={(e) => setTrailPercentage(parseInt(e.target.value))} className="w-full accent-teal-500"/>
+                                        </div>
+
+                                        <div className="mt-3 pt-3 border-t border-white/5 flex items-center gap-2">
+                                            <span className="text-xs text-slate-400 whitespace-nowrap">Seed:</span>
+                                            <input
+                                                type="number"
+                                                value={seed}
+                                                onChange={(e) => {
+                                                    const val = parseInt(e.target.value);
+                                                    if (!isNaN(val)) {
+                                                        setSeed(val);
+                                                        handleRestart();
+                                                    }
+                                                }}
+                                                className="w-16 bg-slate-900 border border-slate-700 text-slate-200 text-xs px-2 py-1 rounded focus:outline-none focus:border-blue-500"
+                                            />
+                                            <button
+                                                onClick={() => {
+                                                    setSeed(Math.floor(Math.random() * 99999));
+                                                    handleRestart();
+                                                }}
+                                                className="flex-1 py-1 bg-slate-800 border border-slate-700 rounded text-slate-400 hover:text-white hover:bg-slate-700 text-xs transition-colors flex items-center justify-center"
+                                            >
+                                                Reshuffle Tracers
+                                            </button>
+                                        </div>
+
+                                    </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {isSidebarCollapsed && (
+                            <div className="flex flex-col items-center gap-6 mt-6 animate-in fade-in duration-300">
+                                <button
+                                    onClick={handlePlayToggle}
+                                    className={`group relative p-2 rounded-full transition-colors ${isPlaying ? 'text-red-400 bg-red-500/10' : 'text-blue-400 hover:bg-white/10'}`}
+                                >
+                                    {isPlaying ? <Pause size={20} /> : <Play size={20} />}
+                                    <span className="absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-lg z-50">
+                                        {isPlaying ? "Pause Simulation" : "Play Evolution"}
+                                    </span>
+                                </button>
+                                <button
+                                    onClick={handleRestart}
+                                    className="group relative p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-full transition-colors"
+                                >
+                                    <SkipBack size={20} />
+                                    <span className="absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-lg z-50">
+                                        Restart (Return to z=10)
+                                    </span>
+                                </button>
+                                <button
+                                    onClick={() => setShowGas(!showGas)}
+                                    className={`group relative p-2 rounded-full transition-colors ${showGas ? 'text-cyan-400 bg-cyan-500/10' : 'text-slate-400 hover:bg-white/10'}`}
+                                >
+                                    <Wind size={20} />
+                                    <span className="absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-lg z-50">
+                                        Toggle Thermal Mode
+                                    </span>
+                                </button>
+                                <button
+                                    onClick={() => setShowVoronoi(!showVoronoi)}
+                                    className={`group relative p-2 rounded-full transition-colors ${showVoronoi ? 'text-cyan-400 bg-cyan-500/10' : 'text-slate-400 hover:bg-white/10'}`}
+                                >
+                                    <Grid size={20} />
+                                    <span className="absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-lg z-50">
+                                        Toggle Voronoi
+                                    </span>
+                                </button>
+                                <button
+                                    onClick={() => setShowVoids(!showVoids)}
+                                    className={`group relative p-2 rounded-full transition-colors ${showVoids ? 'text-rose-400 bg-rose-500/10' : 'text-slate-400 hover:bg-white/10'}`}
+                                >
+                                    <Layers size={20} />
+                                    <span className="absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-lg z-50">
+                                        Void Identification
+                                    </span>
+                                </button>
+                                {showVoids && (
+                                <button
+                                    onClick={handleShowVoidProfile}
+                                    className={`group relative p-2 rounded-full transition-colors ${showVoidProfile ? 'text-emerald-400 bg-emerald-500/10' : 'text-slate-400 hover:bg-white/10'}`}
+                                >
+                                    <Circle size={20} />
+                                    <span className="absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-lg z-50">
+                                        Void Profiles
+                                    </span>
+                                </button>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* --- Tutorial Overlay --- */}
+                    {tutorialStep > 0 && tutorialSteps[tutorialStep - 1].target.current && (
+                        <div className="absolute z-[100] bg-slate-800 border border-blue-500 rounded-lg p-4 shadow-2xl max-w-xs transition-all animate-in fade-in"
+                             style={{
+                                 top: Math.max(20, tutorialSteps[tutorialStep - 1].target.current.getBoundingClientRect().top),
+                                 left: tutorialSteps[tutorialStep - 1].target.current.getBoundingClientRect().right + 20
+                             }}>
+                            <h3 className="text-blue-400 font-bold mb-1">{tutorialSteps[tutorialStep - 1].title}</h3>
+                            <p className="text-sm text-slate-300 mb-3">{tutorialSteps[tutorialStep - 1].content}</p>
+                            <div className="flex justify-between items-center">
+                                <button onClick={closeTutorial} className="text-xs text-slate-500 hover:text-white">End Tour</button>
+                                <button onClick={nextStep} className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-500 transition-colors">
+                                    {tutorialStep === tutorialSteps.length ? "Finish" : "Next"}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {!splitScreen && (
+                    <div className="absolute top-8 right-8 pointer-events-none transition-opacity duration-300 z-10 text-right">
+                         <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-lg border border-white/10 shadow-xl">
+                            <span className="text-sm font-bold text-white block">{ageGyr.toFixed(2)} Gyr</span>
+                            <span className="text-xl font-bold text-slate-300 font-mono">z = {redshift.toFixed(2)}</span>
+                         </div>
+                    </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
