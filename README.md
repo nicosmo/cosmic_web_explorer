@@ -1,5 +1,7 @@
 # Cosmic Web Explorer
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18915566.svg)](https://doi.org/10.5281/zenodo.18915566)
+
 [** Live Demo**](https://nicosmo.github.io/cosmic_web_explorer/)
 
 
@@ -326,18 +328,22 @@ The authors of this code thank Julian Bautista, Nico Hamaus, Geray Karademir, Al
 
 If you use the Cosmic Web Explorer in your pedagogical materials, presentations, or research, please cite it using the Zenodo DOI:
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18915566.svg)](https://doi.org/10.5281/zenodo.18915566)
 
 ```bibtex
-@software{CosmicWebExplorer,
-  author       = {Bouchard, Simon and Schuster, Nico},
+@software{Schuster_CosmicWebExplorer_2026,
+  author       = {Schuster, Nico and Bouchard, Simon},
   title        = {Cosmic Web Explorer: Real-Time Large-Scale Structure in the Browser},
-  year         = {2026},
+  month        = mar,
+  year         = 2026,
   publisher    = {Zenodo},
-  doi          = {10.5281/zenodo.XXXXXXX},
-  url          = {https://doi.org/10.5281/zenodo.XXXXXXX}
+  version      = {v1.0.0},
+  doi          = {10.5281/zenodo.18915566},
+  url          = {https://doi.org/10.5281/zenodo.18915566}
 }
 ```
+
+https://doi.org/10.5281/zenodo.18915566
 
 ## License & Open Science
 
