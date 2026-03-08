@@ -47,7 +47,7 @@ The evolution is computed by combining analytical Second-Order Lagrangian Pertur
 | Tracer Movement | Split-Screen Comparison |
 | :---: | :---: |
 | <a href="Examples/Trails_example.png"><img src="Examples/Trails_example.png" width="350"></a> | <a href="Examples/Comparison_example.png"><img src="Examples/Comparison_example.png" width="350"></a> |
-| *Depict past movement of tracers * | *Cosmological comparison across two panels.* |
+| *Depict past movement of tracers.* | *Cosmological comparison across two panels.* |
 
 
 ---
