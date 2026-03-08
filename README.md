@@ -38,16 +38,16 @@ The evolution is computed by combining analytical Second-Order Lagrangian Pertur
 | <a href="Examples/BAO_example.png"><img src="Examples/BAO_example.png" width="350"></a> | <a href="Examples/Thermal_example.png"><img src="Examples/Thermal_example.png" width="350"></a> |
 | *Evolution from BAO Initial Conditions (ICs).* | *Mimicking local temperature.* |
 
-| Realistic LSS | Split-Screen Comparison |
-| :---: | :---: |
-| <a href="Examples/LSS_example.png"><img src="Examples/LSS_example.png" width="350"></a> | <a href="Examples/Comparison_example.png"><img src="Examples/Comparison_example.png" width="350"></a> |
-| *Evolution from Eisenstein & Hu P(k) ICs.* | *Cosmological comparison across two panels.* |
 
-| Voronoi Tessellation | Void Identification |
+| Realistic LSS | Void Identification |
 | :---: | :---: |
-| <a href="Examples/Voronoi_example.png"><img src="Examples/Voronoi_example.png" width="350"></a> | <a href="Examples/Voids_example.png"><img src="Examples/Voids_example.png" width="350"></a> |
-| *Highlighting regions via Voronoi tessellation.* | *Real-time Void Identification.* |
+| <a href="Examples/LSS_example.png"><img src="Examples/LSS_example.png" width="350"></a> | <a href="Examples/Voids_example.png"><img src="Examples/Voids_example.png" width="350"></a> |
+| *Evolution from Eisenstein & Hu P(k) ICs.* | *Real-time Void Identification.* |
 
+| Tracer Movement | Split-Screen Comparison |
+| :---: | :---: |
+| <a href="Examples/Trails_example.png"><img src="Examples/Trails_example.png" width="350"></a> | <a href="Examples/Comparison_example.png"><img src="Examples/Comparison_example.png" width="350"></a> |
+| *Depict past movement of tracers * | *Cosmological comparison across two panels.* |
 
 
 ---
