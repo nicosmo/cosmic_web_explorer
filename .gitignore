@@ -1,0 +1,16 @@
+# OS Metadata
+.DS_Store
+Thumbs.db
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+
+# Local Testing/Temporary Files
+*.log
+tmp/
+dist/
+
+# If you ever use a local environment file for testing
+.env
