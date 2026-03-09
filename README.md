@@ -1,6 +1,8 @@
 # Cosmic Web Explorer
 
+
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18915566.svg)](https://doi.org/10.5281/zenodo.18915566)
+
 
 [** Live Demo**](https://nicosmo.github.io/cosmic_web_explorer/)
 
@@ -343,7 +345,7 @@ If you use the Cosmic Web Explorer in your pedagogical materials, presentations,
 }
 ```
 
-https://doi.org/10.5281/zenodo.18915566
+
 
 ## License & Open Science
 
