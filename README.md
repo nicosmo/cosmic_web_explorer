@@ -323,7 +323,7 @@ $$
 * **Code Generation:** Google Gemini Pro 3.0/3.1 and Claude Opus 4.5/4.6
 * **Core Libraries:** The void-finding visualization heavily relies on the excellent [d3-delaunay](https://github.com/d3/d3-delaunay) library for computational geometry.
 
-The authors of this code thank Julian Bautista, Nico Hamaus, Geray Karademir, Alice Pisani, and Julien Zoubian for useful discussions. NS is supported by the French government’s France 2030 investment plan (A*MIDEX AMX-22-CEI-03).
+The authors of this code thank Julian Bautista, Marie-Claude Cousinou, Nico Hamaus, Geray Karademir, Alice Pisani, and Julien Zoubian for useful discussions. NS is supported by the French government’s France 2030 investment plan (A*MIDEX AMX-22-CEI-03).
 
 
 ## Citation
