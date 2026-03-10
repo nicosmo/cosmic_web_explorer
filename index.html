@@ -506,6 +506,8 @@ https://github.com/nicosmo/cosmic_web_explorer
             const [useAdhesion, setUseAdhesion] = useState(true);
             const [isPlaying, setIsPlaying] = useState(false);
             const [seed, setSeed] = useState(42);
+            const [enableCustomText, setEnableCustomText] = useState(false);
+            const [customText, setCustomText] = useState('');
             const SIDEBAR_W = 64; // collapsed sidebar width (w-16)
             const [canvasSize, setCanvasSize] = useState({ w: window.innerWidth - SIDEBAR_W, h: window.innerHeight });
             const [renderTrigger, setRenderTrigger] = useState(0);
@@ -947,8 +949,12 @@ https://github.com/nicosmo/cosmic_web_explorer
                 return list;
             }, [seed, SIM_W, SIM_H, tracersPerPanel, boxSizeMpc]);
 
-            // --- COSMOBEST text displacement field ---
+            // --- Custom text SDF: built only when the feature is enabled ---
+            // Renders the user's text onto a hidden canvas at simulation resolution,
+            // then builds a coarse nearest-stroke lookup table (SDF) so that
+            // tracerForces can hard-snap nearby particles to letter strokes.
             const _cosmoTextKick = useMemo(() => {
+                if (!enableCustomText || !customText.trim()) return null;
                 try {
                     const mc = document.createElement('canvas');
                     mc.width  = SIM_W;
@@ -960,16 +966,13 @@ https://github.com/nicosmo/cosmic_web_explorer
                     mctx.font = `400 ${fs}px Arial, sans-serif`;
                     mctx.textAlign    = 'center';
                     mctx.textBaseline = 'middle';
-                    mctx.fillStyle  = '#fff';
-                    mctx.fillText('COSMOBEST', SIM_W / 2, SIM_H / 2);
+                    mctx.fillStyle    = '#fff';
+                    mctx.fillText(customText.trim(), SIM_W / 2, SIM_H / 2);
                     const imgData = mctx.getImageData(0, 0, SIM_W, SIM_H).data;
 
-                    // Build a full-resolution signed-distance field (SDF):
-                    // for every pixel, store (nearestStrokeX, nearestStrokeY, distance).
-                    // We downsample to a grid of cellSz pixels; each cell stores the
-                    // nearest stroke pixel found by scanning all stroke pixels once.
-                    // cellSz = 1 would be exact but huge; cellSz = 4 is a good tradeoff.
-                    const snapR  = SIM_H * 0.025;  // tight: ~1 letter-stroke width
+                    // Build a coarse SDF: for each 4-px cell store the nearest
+                    // stroke pixel within snapR.  O(nStroke * snapR/cellSz) build.
+                    const snapR  = SIM_H * 0.025;
                     const cellSz = 4;
                     const gcw    = Math.ceil(SIM_W / cellSz);
                     const gch    = Math.ceil(SIM_H / cellSz);
@@ -977,27 +980,23 @@ https://github.com/nicosmo/cosmic_web_explorer
                     const nearY  = new Int16Array(gcw * gch).fill(-1);
                     const nearD2 = new Float32Array(gcw * gch).fill(Infinity);
 
-                    // Collect stroke pixels (subsample every 2px for speed)
-                    const strokePx = [];
-                    const strokePy = [];
-                    for (let sy = 0; sy < SIM_H; sy += 2) {
-                        for (let sx = 0; sx < SIM_W; sx += 2) {
+                    // Collect stroke pixels (subsample every 2 px for speed)
+                    const strokePx = [], strokePy = [];
+                    for (let sy = 0; sy < SIM_H; sy += 2)
+                        for (let sx = 0; sx < SIM_W; sx += 2)
                             if (imgData[(sy * SIM_W + sx) * 4] > 128) {
-                                strokePx.push(sx);
-                                strokePy.push(sy);
+                                strokePx.push(sx); strokePy.push(sy);
                             }
-                        }
-                    }
 
-                    // For each coarse cell, find the nearest stroke pixel
-                    const nStroke = strokePx.length;
-                    for (let k = 0; k < nStroke; k++) {
+                    if (strokePx.length === 0) return null; // text rendered outside canvas
+
+                    // For each stroke pixel, update the SDF cells within snapR
+                    for (let k = 0; k < strokePx.length; k++) {
                         const sx = strokePx[k], sy = strokePy[k];
-                        // Range of coarse cells within snapR of this stroke pixel
-                        const x0 = Math.max(0, Math.floor((sx - snapR) / cellSz));
-                        const x1 = Math.min(gcw - 1, Math.ceil((sx + snapR) / cellSz));
-                        const y0 = Math.max(0, Math.floor((sy - snapR) / cellSz));
-                        const y1 = Math.min(gch - 1, Math.ceil((sy + snapR) / cellSz));
+                        const x0 = Math.max(0,       Math.floor((sx - snapR) / cellSz));
+                        const x1 = Math.min(gcw - 1, Math.ceil ((sx + snapR) / cellSz));
+                        const y0 = Math.max(0,       Math.floor((sy - snapR) / cellSz));
+                        const y1 = Math.min(gch - 1, Math.ceil ((sy + snapR) / cellSz));
                         for (let cy = y0; cy <= y1; cy++) {
                             for (let cx = x0; cx <= x1; cx++) {
                                 const pcx = cx * cellSz + cellSz / 2;
@@ -1012,48 +1011,45 @@ https://github.com/nicosmo/cosmic_web_explorer
                             }
                         }
                     }
-                    console.log('[COSMOBEST] SDF built:', nStroke, 'stroke pixels,', gcw, 'x', gch, 'grid, snapR=', snapR);
                     return { snapR, cellSz, gcw, gch, nearX, nearY };
-                } catch(e) { console.error('[COSMOBEST] SDF build failed:', e); return null; }
-            }, [SIM_W, SIM_H]);
+                } catch(e) {
+                    console.error('[CustomText] SDF build failed:', e);
+                    return null;
+                }
+            }, [enableCustomText, customText, SIM_W, SIM_H]);
+
+            // Helper: apply the text imprint onto a pre-computed displacement array.
+            // Particles whose Lagrangian position (qx, qy) falls within snapR of a
+            // letter stroke have their displacement hard-replaced with the vector
+            // pointing directly to that stroke pixel.  The returned Uint8Array marks
+            // which particles were snapped (used to suppress 2LPT scatter).
+            const applyTextImprint = (forces, kick) => {
+                if (!kick) return null;
+                const { snapR, cellSz, gcw, gch, nearX, nearY } = kick;
+                const snapped = new Uint8Array(tracersPerPanel);
+                for (let i = 0; i < tracersPerPanel; i++) {
+                    const g   = initialTracers[i];
+                    const gcx = Math.min(gcw - 1, Math.floor(g.qx / cellSz));
+                    const gcy = Math.min(gch - 1, Math.floor(g.qy / cellSz));
+                    const gi  = gcy * gcw + gcx;
+                    const nx  = nearX[gi];
+                    const ny  = nearY[gi];
+                    if (nx < 0) continue;
+                    const dx = nx - g.qx, dy = ny - g.qy;
+                    if (dx * dx + dy * dy < snapR * snapR) {
+                        forces[i * 2]     = dx;
+                        forces[i * 2 + 1] = dy;
+                        snapped[i] = 1;
+                    }
+                }
+                return snapped;
+            };
 
             const tracerForces = useMemo(() => {
                 const forces = initMode === 'pk'
                     ? generatePkDisplacements(initialTracers, tracersPerPanel, SIM_W, SIM_H, omegaM, panelBoxMpc, seed)
                     : computeTracerForces(initialTracers, centers, BAO_RADIUS_PX, tracersPerPanel, SIM_W, SIM_H, seed, omegaM, panelBoxMpc);
-
-                // Apply COSMOBEST text imprint.
-                // Strategy: for particles whose Lagrangian position (qx,qy) falls
-                // within snapR of a letter stroke, REPLACE their displacement with
-                // one that points directly to the nearest stroke pixel.
-                // This overrides the random P(k) background entirely within the
-                // letter regions, guaranteeing readable dense filaments at z=0.
-                // Particles outside the letters are untouched.
-                if (_cosmoTextKick) {
-                    const { snapR, cellSz, gcw, gch, nearX, nearY } = _cosmoTextKick;
-                    const snapped = new Uint8Array(tracersPerPanel);
-                    for (let i = 0; i < tracersPerPanel; i++) {
-                        const g = initialTracers[i];
-                        const gcx = Math.min(gcw - 1, Math.floor(g.qx / cellSz));
-                        const gcy = Math.min(gch - 1, Math.floor(g.qy / cellSz));
-                        const gi  = gcy * gcw + gcx;
-                        const nx  = nearX[gi];
-                        const ny  = nearY[gi];
-                        if (nx < 0) continue;
-                        const dx   = nx - g.qx;
-                        const dy   = ny - g.qy;
-                        const dist = Math.sqrt(dx * dx + dy * dy);
-                        if (dist < snapR) {
-                            // Hard snap: displacement points exactly to the stroke pixel.
-                            // At z=0, physX = qx + forces * dispScale ≈ qx + dx * 0.96 = nx * 0.96 + qx * 0.04.
-                            // Good enough — all nearby particles land on the same pixel.
-                            forces[i * 2]     = dx;
-                            forces[i * 2 + 1] = dy;
-                            snapped[i] = 1;
-                        }
-                    }
-                    forces._cosmoSnapped = snapped;  // pass to tracerForces2 suppressor
-                }
+                forces._cosmoSnapped = applyTextImprint(forces, _cosmoTextKick);
                 return forces;
             }, [initialTracers, centers, BAO_RADIUS_PX, tracersPerPanel, SIM_W, SIM_H, seed, omegaM, initMode, panelBoxMpc, _cosmoTextKick]);
 
@@ -1062,38 +1058,19 @@ https://github.com/nicosmo/cosmic_web_explorer
                 const forces = initMode === 'pk'
                     ? generatePkDisplacements(initialTracers, tracersPerPanel, SIM_W, SIM_H, omegaMB, panelBoxMpc, seed)
                     : computeTracerForces(initialTracers, centers, BAO_RADIUS_PX_B, tracersPerPanel, SIM_W, SIM_H, seed, omegaMB, panelBoxMpc);
-                if (_cosmoTextKick) {
-                    const { snapR, cellSz, gcw, gch, nearX, nearY } = _cosmoTextKick;
-                    for (let i = 0; i < tracersPerPanel; i++) {
-                        const g = initialTracers[i];
-                        const gcx = Math.min(gcw - 1, Math.floor(g.qx / cellSz));
-                        const gcy = Math.min(gch - 1, Math.floor(g.qy / cellSz));
-                        const gi  = gcy * gcw + gcx;
-                        const nx  = nearX[gi];
-                        const ny  = nearY[gi];
-                        if (nx < 0) continue;
-                        const dx   = nx - g.qx;
-                        const dy   = ny - g.qy;
-                        const dist = Math.sqrt(dx * dx + dy * dy);
-                        if (dist < snapR) {
-                            forces[i * 2]     = dx;
-                            forces[i * 2 + 1] = dy;
-                        }
-                    }
-                }
+                applyTextImprint(forces, _cosmoTextKick);
                 return forces;
             }, [splitScreen, initialTracers, centers, BAO_RADIUS_PX_B, tracersPerPanel, SIM_W, SIM_H, seed, tracerForces, omegaMB, initMode, panelBoxMpc, _cosmoTextKick]);
 
-            // 2LPT correction displacement computed from 1LPT via FFT
+            // 2LPT correction displacement computed from 1LPT via FFT.
+            // For particles snapped to letter strokes the 2LPT scatter would blur
+            // the text; we zero their correction to keep the strokes sharp.
             const tracerForces2 = useMemo(() => {
                 const f2 = compute2LPTDisplacement(tracerForces, initialTracers, tracersPerPanel, SIM_W, SIM_H);
-                // Zero 2LPT for particles snapped to COSMOBEST strokes so the
-                // 2LPT scatter doesn't blur the letters.
                 const snapped = tracerForces._cosmoSnapped;
                 if (snapped) {
-                    for (let i = 0; i < tracersPerPanel; i++) {
+                    for (let i = 0; i < tracersPerPanel; i++)
                         if (snapped[i]) { f2[i * 2] = 0; f2[i * 2 + 1] = 0; }
-                    }
                 }
                 return f2;
             }, [tracerForces, initialTracers, tracersPerPanel, SIM_W, SIM_H]);
@@ -3006,6 +2983,42 @@ https://github.com/nicosmo/cosmic_web_explorer
                                             >
                                                 Reshuffle Tracers
                                             </button>
+                                        </div>
+
+                                        {/* --- Custom text imprint --- */}
+                                        <div className="mt-3 pt-3 border-t border-white/5">
+                                            <label className="flex items-center gap-2 cursor-pointer select-none">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={enableCustomText}
+                                                    onChange={(e) => {
+                                                        setEnableCustomText(e.target.checked);
+                                                        handleRestart();
+                                                    }}
+                                                    className="accent-purple-500 w-3.5 h-3.5"
+                                                />
+                                                <span className="text-xs text-slate-300 font-medium">Add your own text</span>
+                                                <TooltipWrapper text="When enabled, the word you type will be imprinted into the cosmic web: particles near each letter stroke are redirected so that the text appears as dense filaments at z ≈ 0. The effect is invisible at z = 10 and gradually emerges as the Universe evolves. Works in both BAO and Realistic init modes. Restart the simulation after changing the text.">
+                                                    <span className="ml-auto text-slate-500 hover:text-slate-300 cursor-help text-xs">ⓘ</span>
+                                                </TooltipWrapper>
+                                            </label>
+                                            {enableCustomText && (
+                                                <div className="mt-2 flex gap-2">
+                                                    <input
+                                                        type="text"
+                                                        value={customText}
+                                                        placeholder="e.g. COSMOBEST"
+                                                        maxLength={16}
+                                                        onChange={(e) => setCustomText(e.target.value)}
+                                                        onKeyDown={(e) => { if (e.key === 'Enter') handleRestart(); }}
+                                                        className="flex-1 bg-slate-900 border border-slate-700 text-slate-200 text-xs px-2 py-1 rounded focus:outline-none focus:border-purple-500 placeholder-slate-600"
+                                                    />
+                                                    <button
+                                                        onClick={handleRestart}
+                                                        className="px-2 py-1 bg-purple-700 hover:bg-purple-600 text-white text-xs rounded transition-colors"
+                                                    >Apply</button>
+                                                </div>
+                                            )}
                                         </div>
 
                                     </div>
