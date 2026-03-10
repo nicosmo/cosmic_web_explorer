@@ -1,7 +1,7 @@
 # Cosmic Web Explorer
 
 
-[![DOI](https://zenodo.org/badge/doi/10.5281/zenodo.18915566.svg)](https://doi.org/10.5281/zenodo.18915566)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.18915566-blue.svg)](https://doi.org/10.5281/zenodo.18915566)
 
 [** Live Demo**](https://nicosmo.github.io/cosmic_web_explorer/)
 
@@ -329,7 +329,7 @@ The authors of this code thank Julian Bautista, Marie-Claude Cousinou, Nico Hama
 
 If you use the Cosmic Web Explorer in your pedagogical materials, presentations, or research, please cite it using the Zenodo DOI:
 
-[![DOI](https://zenodo.org/badge/doi/10.5281/zenodo.18915566.svg)](https://doi.org/10.5281/zenodo.18915566)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.18915566-blue.svg)](https://doi.org/10.5281/zenodo.18915566)
 
 ```bibtex
 @software{Schuster_CosmicWebExplorer_2026,
