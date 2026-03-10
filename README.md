@@ -1,8 +1,7 @@
 # Cosmic Web Explorer
 
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18915566.svg)](https://doi.org/10.5281/zenodo.18915566)
-
+[![DOI](https://zenodo.org/badge/doi/10.5281/zenodo.18915566.svg)](https://doi.org/10.5281/zenodo.18915566)
 
 [** Live Demo**](https://nicosmo.github.io/cosmic_web_explorer/)
 
@@ -13,7 +12,7 @@
 
 
 
-**Initial Concept by Simon Bouchard and [Nico Schuster](https://orcid.org/0000-0001-5620-8554) | Development by [Nico Schuster](https://orcid.org/0000-0001-5620-8554)**
+**Initial Concept by [Simon Bouchard](https://github.com/SBouchard01) and [Nico Schuster](https://orcid.org/0000-0001-5620-8554) | Development by [Nico Schuster](https://orcid.org/0000-0001-5620-8554)**
 
 
 A real-time, interactive simulation of the Large-Scale Structure (LSS) of the Universe, running entirely in your browser.
@@ -330,7 +329,7 @@ The authors of this code thank Julian Bautista, Marie-Claude Cousinou, Nico Hama
 
 If you use the Cosmic Web Explorer in your pedagogical materials, presentations, or research, please cite it using the Zenodo DOI:
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18915566.svg)](https://doi.org/10.5281/zenodo.18915566)
+[![DOI](https://zenodo.org/badge/doi/10.5281/zenodo.18915566.svg)](https://doi.org/10.5281/zenodo.18915566)
 
 ```bibtex
 @software{Schuster_CosmicWebExplorer_2026,
