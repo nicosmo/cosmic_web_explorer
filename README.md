@@ -330,8 +330,7 @@ $$
 * **Code Generation:** Google Gemini Pro 3.0/3.1 and Claude Opus 4.5/4.6
 * **Core Libraries:** The void-finding visualization heavily relies on the excellent [d3-delaunay](https://github.com/d3/d3-delaunay) library for computational geometry.
 
-The authors of this code thank Julian Bautista, Marie-Claude Cousinou, Nico Hamaus, Geray Karademir, Alice Pisani, and Julien Zoubian for useful discussions. NS is supported by the French government’s France 2030 investment plan (A*MIDEX AMX-22-CEI-03).
-
+The authors of this code thank Julien Zoubian and Dennis Frei for their valuable contributions to the development of the code, as well as Julian Bautista, Marie-Claude Cousinou, Nico Hamaus, Geray Karademir, and Alice Pisani for useful discussions and feedback. NS is supported by the French government’s France 2030 investment plan (A*MIDEX AMX-22-CEI-03).
 
 ## Citation
 
@@ -341,7 +340,7 @@ If you use the Cosmic Web Explorer in your pedagogical materials, presentations,
 
 ```bibtex
 @software{Schuster_CosmicWebExplorer_2026,
-  author       = {Schuster, Nico and Bouchard, Simon},
+  author       = {Schuster, Nico and Bouchard, Simon and Zoubian, Julien and Frei, Dennis},
   title        = {Cosmic Web Explorer: Real-Time Large-Scale Structure in the Browser},
   month        = mar,
   year         = 2026,
