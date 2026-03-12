@@ -3005,7 +3005,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                     className="accent-purple-500 w-3.5 h-3.5"
                                                 />
                                                 <span className="text-xs text-slate-300 font-medium">Add your own text</span>
-                                                <TooltipWrapper text="When enabled, the word you type will be imprinted into the cosmic web: particles near each letter stroke are redirected so that the text appears as dense filaments at z ≈ 0. The effect is invisible at z = 10 and gradually emerges as the Universe evolves. Works in both BAO and Realistic init modes. Restart the simulation after changing the text.">
+                                                <TooltipWrapper text="When enabled, the text you type will be imprinted into the cosmic web: particles near each character are redirected so that the text evolves into a as dense filaments at z = 0. The effect is invisible at z = 10 and gradually emerges as the Universe evolves. Works in both BAO and Realistic init modes. Restart the simulation after changing the text.">
                                                     <span className="ml-auto text-slate-500 hover:text-slate-300 cursor-help text-xs">ⓘ</span>
                                                 </TooltipWrapper>
                                             </label>
@@ -3014,7 +3014,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                     <input
                                                         type="text"
                                                         value={customText}
-                                                        placeholder="e.g. COSMOBEST"
+                                                        placeholder="e.g., COSMIC WEB"
                                                         maxLength={16}
                                                         onChange={(e) => setCustomText(e.target.value)}
                                                         onKeyDown={(e) => { if (e.key === 'Enter') handleRestart(); }}
@@ -3130,4 +3130,5 @@ https://github.com/nicosmo/cosmic_web_explorer
         root.render(<App />);
     </script>
 </body>
+
 </html>
