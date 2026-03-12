@@ -100,11 +100,11 @@ Contributions, feature suggestions, and bug reports are highly welcome!
 * **Snapshot Export:** Download high-resolution PNGs of the current visualization, complete with physical HUD overlays detailing the cosmic age and redshift.
 * **Data Export (CSV):** Export the exact comoving coordinates (Mpc/h) of all tracers to a CSV file (fully supports simultaneous dual exports in split-screen mode).
 
-### Text Imprint — Write in the Cosmic Web
+### Text Imprint - Write in the Cosmic Web
 
 Under the **Seed** control in the sidebar, check **"Add your own text"**, type a word (up to 16 characters), and press **Apply**. The text will be invisible at $z = 10$ and gradually emerge as dense filaments as the Universe evolves toward $z \approx 0$.
 
-The imprint works by redirecting a small fraction of the tracer displacement field — particles near each letter stroke are given an initial condition that causes them to converge onto that stroke as $D_1(z) \to 1$. The surrounding cosmic web is statistically unaffected. The feature is **opt-in and off by default**; when unchecked the simulation is identical to the standard run.
+The imprint works by hijacking the 2nd-order Lagrangian perturbation theory (2LPT) corrections. The primary (1LPT) initial conditions remain completely pure and physical. Because the 2LPT correction scales quadratically with the growth factor ($D_1(z)^2$), the text offset is practically zero at $z = 10$ and mathematically forces the particles to converge onto the letter strokes exactly as $D_1(z) \rightarrow 1$. The surrounding cosmic web is unaffected. The feature is **opt-in and off by default**; when unchecked the simulation is identical to the standard run.
 
 For a detailed description of how this works, see [IMPRINT.md](IMPRINT.md).
 
