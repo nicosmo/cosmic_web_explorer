@@ -1,4 +1,4 @@
-# Text imprint feature — implementation notes
+# Text imprint feature - implementation notes
 
 This document describes the technical implementation of the **"Add your own text"** feature. For a user-facing overview, see the [README](README.md#text-imprint-write-in-the-cosmic-web).
 
@@ -6,12 +6,12 @@ This document describes the technical implementation of the **"Add your own text
 
 ## Principle
 
-The text is imprinted into the **Lagrangian displacement field** (1LPT / Zel'dovich approximation) before the simulation starts. Particle grid positions and the cosmological transfer function are left untouched. Because the displacement field is scaled by the linear growth factor $D_1(z)$, the imprint is:
+The text is imprinted exclusively into the **second-order Lagrangian displacement field** (2LPT) before the simulation starts. The primary 1LPT (Zel'dovich) displacements, particle grid positions, and the cosmological transfer function are left completely untouched. Because the 2LPT displacement field scales quadratically with the linear growth factor ($D_1(z)^2$) the imprint is:
 
-- **invisible at $z = 10$** — $D_1 \approx 0.12$, so displacements are tiny and particles sit near their random Lagrangian positions
-- **fully formed at $z \approx 0$** — $D_1 \approx 0.96$, displacements reach their target value and particles converge onto the letter strokes
+- **invisible at $z = 10$** — $D_1^2 \approx 0.014$, so the text-forming offsets are minuscule and particles follow their natural physical trajectories
+- **fully formed at $z \approx 0$** — $D_1^2 \rightarrow 1.0$, the 2LPT correction bridges the exact distance required to pull particles onto the letter strokes
 
-When the feature is disabled (default), `_cosmoTextKick` returns `null` and the three useMemos that use it are entirely unaffected — the simulation runs exactly as without the feature.
+When the feature is disabled (default), `_cosmoTextKick` returns `null` and the three useMemos that use it are entirely unaffected, meaning the simulation runs exactly as without the feature.
 
 ---
 
@@ -38,46 +38,53 @@ Returns `null` when `enableCustomText` is false or `customText` is empty, otherw
 
    Build complexity: $O(N_{\text{stroke}} \times (\text{snapR}/\text{cellSz})^2)$, typically < 5 ms.
 
-### 2. `applyTextImprint` helper — override displacements
+### 2. `getTextImprintTargets` helper - find target pixels
 
-Pure function, called from `tracerForces` and `tracerForcesB`:
+Pure function, called from `tracerForces` and `tracerForcesB` to identify which particles fall within the text basin, returning their target coordinate:
 
 ```js
-const applyTextImprint = (forces, kick) => {
+const getTextImprintTargets = (kick) => {
     if (!kick) return null;
-    const snapped = new Uint8Array(tracersPerPanel);
+    const targets = new Float32Array(tracersPerPanel * 2).fill(-1);
+    let hasTargets = false;
+
     for (let i = 0; i < tracersPerPanel; i++) {
         // Look up nearest stroke pixel in O(1)
-        const nx = nearX[cellIndex(g.qx, g.qy)];
-        const ny = nearY[cellIndex(g.qx, g.qy)];
-        const dx = nx - g.qx,  dy = ny - g.qy;
+        const nx = nearX[cellIndex];
+        const ny = nearY[cellIndex];
+        if (nx < 0) continue;
+
+        const dx = nx - g.qx, dy = ny - g.qy;
         if (dx*dx + dy*dy < snapR*snapR) {
-            forces[i*2]   = dx;   // hard-replace 1LPT displacement
-            forces[i*2+1] = dy;
-            snapped[i] = 1;
+            targets[i*2]   = nx; 
+            targets[i*2+1] = ny;
+            hasTargets = true;
         }
     }
-    return snapped;   // mask passed to tracerForces2 to suppress 2LPT
+    return hasTargets ? targets : null;
 };
 ```
 
-**Hard replacement** (no blend, no taper): every particle within `snapR` of a stroke pixel gets its displacement set to the vector pointing exactly to that stroke pixel. All basin particles converge to the same location at $z \approx 0$, forming a sharp, dense filament with no diffuse halo.
-
 ### 3. `tracerForces` / `tracerForcesB` useMemos
 
-The standard P(k) or BAO displacement field is computed first, then `applyTextImprint` is called. The returned `snapped` mask is attached to the `forces` array as `forces._cosmoSnapped`. `_cosmoTextKick` is in the dependency array, so ICs regenerate automatically when the text or checkbox changes.
+The standard P(k) or BAO displacement field is computed purely and completely accurately. The  `targets` array is simply attached to the `forces` array as `forces._cosmoTextTargets` to pass it down the pipeline without mutating the underlying physics. `_cosmoTextKick` is in the dependency array, so ICs regenerate automatically when the text or checkbox changes.
 
-The same imprint is applied to Panel B in split-screen mode.
 
-### 4. `tracerForces2` useMemo — suppress 2LPT scatter
+### 4. `tracerForces2` useMemo - hijack late-time scatter
 
-The second-order correction $\mathbf{\Psi}^{(2)}$ is proportional to $-\frac{3}{7} D_1^2$ and scatters particles away from the 1LPT target — for snapped particles this blurs the letter strokes. The fix:
+The second-order correction $\mathbf{\Psi}^{(2)}$ is proportional to $-\frac{3}{7} D_1^2$. For particles flagged in the targets array, we hijack this vector to act as a perfectly calibrated bridge to the text stroke:
+```
+// Find where 1LPT would naturally put the particle at z=0
+const naturalX = g.qx + tracerForces[i * 2] * dispScale;
+const naturalY = g.qy + tracerForces[i * 2 + 1] * dispScale;
 
-```js
-if (snapped[i]) { f2[i*2] = 0;  f2[i*2+1] = 0; }
+// Overwrite 2LPT to bridge the exact gap to the text stroke
+f2[i * 2]     = (tx - naturalX) / disp2Scale;
+f2[i * 2 + 1] = (ty - naturalY) / disp2Scale;
 ```
 
-Zeroing $\mathbf{\Psi}^{(2)}$ for letter particles means they follow pure Zel'dovich (1LPT) trajectories, which land them exactly on the stroke pixels at $z \approx 0$.
+By calculating where the particle would naturally land at $z=0$ using only 1LPT, we can assign a 2LPT displacement that exactly covers the remaining distance. Because it uses the $D_1^2$ scaling, the text stays completely hidden in the early universe.
+
 
 ---
 
@@ -90,7 +97,7 @@ Zeroing $\mathbf{\Psi}^{(2)}$ for letter particles means they follow pure Zel'do
 | `snapR` | `2.5 % of SIM_H` | ~1 stroke-width basin; narrow enough to avoid halos |
 | `cellSz` | `4 px` | SDF accuracy vs. memory tradeoff |
 | Blend | none (hard snap) | Sharp convergence, no gradient halo |
-| 2LPT for snapped particles | zeroed | Eliminates secondary scatter that blurs strokes |
+| 2LPT for snapped particles | targeted | Calculated to exactly bridge the gap between the natural 1LPT destination and the target stroke pixel |
 
 ---
 
