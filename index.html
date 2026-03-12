@@ -1028,35 +1028,39 @@ https://github.com/nicosmo/cosmic_web_explorer
             // Helper: apply the text imprint onto a pre-computed displacement array.
             // Particles whose Lagrangian position (qx, qy) falls within snapR of a
             // letter stroke have their displacement hard-replaced with the vector
-            // pointing directly to that stroke pixel.  The returned Uint8Array marks
-            // which particles were snapped (used to suppress 2LPT scatter).
-            const applyTextImprint = (forces, kick) => {
+            // pointing directly to that stroke pixel. Displacement is only in 2LPT forces, not 1LPT
+            const getTextImprintTargets = (kick) => {
                 if (!kick) return null;
                 const { snapR, cellSz, gcw, gch, nearX, nearY } = kick;
-                const snapped = new Uint8Array(tracersPerPanel);
+                const targets = new Float32Array(tracersPerPanel * 2).fill(-1);
+                let hasTargets = false;
+
                 for (let i = 0; i < tracersPerPanel; i++) {
-                    const g   = initialTracers[i];
+                    const g = initialTracers[i];
                     const gcx = Math.min(gcw - 1, Math.floor(g.qx / cellSz));
                     const gcy = Math.min(gch - 1, Math.floor(g.qy / cellSz));
-                    const gi  = gcy * gcw + gcx;
-                    const nx  = nearX[gi];
-                    const ny  = nearY[gi];
+                    const gi = gcy * gcw + gcx;
+                    const nx = nearX[gi];
+                    const ny = nearY[gi];
+                    
                     if (nx < 0) continue;
+                    
                     const dx = nx - g.qx, dy = ny - g.qy;
                     if (dx * dx + dy * dy < snapR * snapR) {
-                        forces[i * 2]     = dx;
-                        forces[i * 2 + 1] = dy;
-                        snapped[i] = 1;
+                        targets[i * 2] = nx;
+                        targets[i * 2 + 1] = ny;
+                        hasTargets = true;
                     }
                 }
-                return snapped;
+                return hasTargets ? targets : null;
             };
 
             const tracerForces = useMemo(() => {
                 const forces = initMode === 'pk'
                     ? generatePkDisplacements(initialTracers, tracersPerPanel, SIM_W, SIM_H, omegaM, panelBoxMpc, seed)
                     : computeTracerForces(initialTracers, centers, BAO_RADIUS_PX, tracersPerPanel, SIM_W, SIM_H, seed, omegaM, panelBoxMpc);
-                forces._cosmoSnapped = applyTextImprint(forces, _cosmoTextKick);
+                
+                forces._cosmoTextTargets = getTextImprintTargets(_cosmoTextKick);
                 return forces;
             }, [initialTracers, centers, BAO_RADIUS_PX, tracersPerPanel, SIM_W, SIM_H, seed, omegaM, initMode, panelBoxMpc, _cosmoTextKick]);
 
@@ -1065,27 +1069,66 @@ https://github.com/nicosmo/cosmic_web_explorer
                 const forces = initMode === 'pk'
                     ? generatePkDisplacements(initialTracers, tracersPerPanel, SIM_W, SIM_H, omegaMB, panelBoxMpc, seed)
                     : computeTracerForces(initialTracers, centers, BAO_RADIUS_PX_B, tracersPerPanel, SIM_W, SIM_H, seed, omegaMB, panelBoxMpc);
-                applyTextImprint(forces, _cosmoTextKick);
+                
+                forces._cosmoTextTargets = getTextImprintTargets(_cosmoTextKick);
                 return forces;
             }, [splitScreen, initialTracers, centers, BAO_RADIUS_PX_B, tracersPerPanel, SIM_W, SIM_H, seed, tracerForces, omegaMB, initMode, panelBoxMpc, _cosmoTextKick]);
 
-            // 2LPT correction displacement computed from 1LPT via FFT.
-            // For particles snapped to letter strokes the 2LPT scatter would blur
-            // the text; we zero their correction to keep the strokes sharp.
             const tracerForces2 = useMemo(() => {
                 const f2 = compute2LPTDisplacement(tracerForces, initialTracers, tracersPerPanel, SIM_W, SIM_H);
-                const snapped = tracerForces._cosmoSnapped;
-                if (snapped) {
-                    for (let i = 0; i < tracersPerPanel; i++)
-                        if (snapped[i]) { f2[i * 2] = 0; f2[i * 2 + 1] = 0; }
+                const targets = tracerForces._cosmoTextTargets;
+                
+                if (targets) {
+                    // Calculate the exact physics scales at z=0
+                    const densityFactor = Math.pow(omegaM / 0.3, 0.6);
+                    const dispScale = 1.0 * DISP_SCALE_FACTOR * Math.min(1.0, RAW_SCALE_UNIFIED) * densityFactor;
+                    const disp2Scale = (-3 / 7) * 1.0 * dispScale;
+
+                    for (let i = 0; i < tracersPerPanel; i++) {
+                        const tx = targets[i * 2];
+                        if (tx !== -1) {
+                            const ty = targets[i * 2 + 1];
+                            const g = initialTracers[i];
+                            
+                            // Find where 1LPT would naturally put the particle at z=0
+                            const naturalX = g.qx + tracerForces[i * 2] * dispScale;
+                            const naturalY = g.qy + tracerForces[i * 2 + 1] * dispScale;
+                            
+                            // Overwrite 2LPT to bridge the exact gap to the text stroke
+                            f2[i * 2] = (tx - naturalX) / disp2Scale;
+                            f2[i * 2 + 1] = (ty - naturalY) / disp2Scale;
+                        }
+                    }
                 }
                 return f2;
-            }, [tracerForces, initialTracers, tracersPerPanel, SIM_W, SIM_H]);
+            }, [tracerForces, initialTracers, tracersPerPanel, SIM_W, SIM_H, omegaM]);
 
             const tracerForces2B = useMemo(() => {
                 if (!splitScreen) return tracerForces2;
-                return compute2LPTDisplacement(tracerForcesB, initialTracers, tracersPerPanel, SIM_W, SIM_H);
-            }, [splitScreen, tracerForcesB, initialTracers, tracersPerPanel, SIM_W, SIM_H, tracerForces2]);
+                const f2 = compute2LPTDisplacement(tracerForcesB, initialTracers, tracersPerPanel, SIM_W, SIM_H);
+                const targets = tracerForcesB._cosmoTextTargets;
+                
+                if (targets) {
+                    const densityFactor = Math.pow(omegaMB / 0.3, 0.6);
+                    const dispScale = 1.0 * DISP_SCALE_FACTOR * Math.min(1.0, RAW_SCALE_UNIFIED) * densityFactor;
+                    const disp2Scale = (-3 / 7) * 1.0 * dispScale;
+
+                    for (let i = 0; i < tracersPerPanel; i++) {
+                        const tx = targets[i * 2];
+                        if (tx !== -1) {
+                            const ty = targets[i * 2 + 1];
+                            const g = initialTracers[i];
+                            
+                            const naturalX = g.qx + tracerForcesB[i * 2] * dispScale;
+                            const naturalY = g.qy + tracerForcesB[i * 2 + 1] * dispScale;
+                            
+                            f2[i * 2] = (tx - naturalX) / disp2Scale;
+                            f2[i * 2 + 1] = (ty - naturalY) / disp2Scale;
+                        }
+                    }
+                }
+                return f2;
+            }, [splitScreen, tracerForcesB, initialTracers, tracersPerPanel, SIM_W, SIM_H, tracerForces2, omegaMB]);
 
             const resetPhysics = () => {
                 localDynamics.current.offsets.fill(0);
@@ -3132,3 +3175,4 @@ https://github.com/nicosmo/cosmic_web_explorer
 </body>
 
 </html>
+
