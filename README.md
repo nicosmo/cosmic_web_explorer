@@ -1,7 +1,7 @@
 # Cosmic Web Explorer
 
 
-[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.18915566-blue.svg)](https://doi.org/10.5281/zenodo.18915566)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.18915566-blue.svg)](https://doi.org/10.5281/zenodo.18915566) and [![arXiv](https://img.shields.io/badge/arXiv-2603.18145-b31b1b.svg)](https://arxiv.org/abs/2603.18145)
 
 [** Live Demo**](https://nicosmo.github.io/cosmic_web_explorer/)
 
