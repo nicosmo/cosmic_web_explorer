@@ -351,6 +351,8 @@ If you use the Cosmic Web Explorer in your pedagogical materials, presentations,
 }
 ```
 
+## Privacy and Analytics
+The GitHub Pages site for this project uses [GoatCounter](https://www.goatcounter.com/), a privacy-friendly, open-source web analytics tool. It helps see how many people are visiting the site without tracking personal data or using cookies.
 
 
 ## License & Open Science
