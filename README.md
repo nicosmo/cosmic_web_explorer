@@ -89,7 +89,7 @@ Contributions, feature suggestions, and bug reports are highly welcome!
 * **Voronoi Tessellation:** Displays the Voronoi cells of tracers, highlighting underdense regions.
 * **Real-Time Void Identification:** Finds cosmic voids using a background Web Worker running a Voronoi-Watershed algorithm (similar to [VIDE](https://ui.adsabs.harvard.edu/abs/2015A%26C.....9....1S/abstract)). Filter void cells by "Color Cutoff," merge them using a "Minimum Radius," and display geometric or minimum-density centers.
 * **Void Density Profiles:** Compute and plot the radial density profiles ($\rho(r)/\bar{\rho}$) of identified voids, using either median or volume-weighted stacking.
-* **Power Spectrum $P(k)$:** In realistic IC mode, computes the 2D FFT of the evolved density field to display the measured power spectrum.
+* **Power Spectrum $P(k)$:** In realistic IC mode, extracts the 2D power spectrum from the evolved density field. Features exact non-power-of-2 grid evaluation (Bluestein's FFT) and interlacing ([Sefusatti et al. 2016](https://ui.adsabs.harvard.edu/abs/2016MNRAS.460.3624S/abstract)).
 * **2-Point Correlation:** In BAO mode, evaluates the cross-correlation $\xi(r)$ of tracers around known BAO seeds.
 * **Density Distribution:** A real-time normalized histogram of the tracer density contrast ($\delta = \rho/\bar{\rho} - 1$), tracking the shift from linear Gaussian fluctuations to a skewed non-linear distribution.
 * **Ruler:** Measure comoving distances (Mpc, assuming $h = 0.674$) directly on the web. *(Interaction: Click to start, click to end, double-click near the start to clear).*
@@ -316,6 +316,8 @@ $$
   > Used for scaling the effective gravitational coupling constant $G_{\mathrm{eff}}$.
 * **Neyrinck, M. C. (2008).** *ZOBOV: a parameter-free void-finding algorithm.* [NASA ADS](https://ui.adsabs.harvard.edu/abs/2008MNRAS.386.2101N/abstract)
   > Theoretical basis for the Voronoi Tessellation Field Estimator (VTFE) and Watershed segmentation.
+* **Sefusatti, E., et al. (2016).** *Accurate Estimators of Correlation Functions in Fourier Space.* [NASA ADS](https://ui.adsabs.harvard.edu/abs/2016MNRAS.460.3624S/abstract)
+  > Guided the void identification.
 * **Sutter, P. M., et al. (2015).** *VIDE: The Void IDentification and Examination toolkit.* [NASA ADS](https://ui.adsabs.harvard.edu/abs/2015A%26C.....9....1S/abstract)
   > Guided the void identification.
 
@@ -330,7 +332,7 @@ $$
 * **Code Generation:** Google Gemini Pro 3.0/3.1 and Claude Opus 4.5/4.6
 * **Core Libraries:** The void-finding visualization heavily relies on the excellent [d3-delaunay](https://github.com/d3/d3-delaunay) library for computational geometry.
 
-The authors of this code thank Julien Zoubian and Dennis Frei for their valuable contributions to the development of the code, as well as Julian Bautista, Marie-Claude Cousinou, Nico Hamaus, Geray Karademir, and Alice Pisani for useful discussions and feedback. NS is supported by the French government’s France 2030 investment plan (A*MIDEX AMX-22-CEI-03).
+The authors of this code thank Julien Zoubian and Dennis Frei for their valuable contributions to the development of the code, as well as Julian Bautista, Marie-Claude Cousinou, Nico Hamaus, Geray Karademir, Arnaud de Mattia, and Alice Pisani for useful discussions and feedback. NS is supported by the French government’s France 2030 investment plan (A*MIDEX AMX-22-CEI-03).
 
 ## Citation
 
