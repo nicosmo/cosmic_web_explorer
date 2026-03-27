@@ -622,60 +622,102 @@ function computePowerSpectrum(physX, physY, N, SIM_W, SIM_H, pxPerMpc, panelId) 
     const LxMpc = (SIM_W / pxPerMpc) * h;
     const LyMpc = (SIM_H / pxPerMpc) * h;
 
+    // Interlacing for Nyquist Aliasing Suppression
+    // Reference: Sefusatti et al. 2016 (arXiv:1512.07295)
+    // To suppress aliasing at high k, we use two CIC grids shifted by half
+    // a cell, FFT both, and combine them with a phase shift (Eq. 33).
     // CIC mass assignment (periodic)
-    const grid = new Float64Array(NX * NY);
+    const grid1 = new Float64Array(NX * NY);
+    const grid2 = new Float64Array(NX * NY);
     const cellWPx = SIM_W / NX;
     const cellHPx = SIM_H / NY;
     const meanDensity = N / (NX * NY);
 
     for (let i = 0; i < N; i++) {
-        // Fractional grid coordinates
-        const gx = physX[i] / cellWPx - 0.5;
-        const gy = physY[i] / cellHPx - 0.5;
-        const ix = Math.floor(gx);
-        const iy = Math.floor(gy);
-        const dx = gx - ix;
-        const dy = gy - iy;
+        // First grid (standard)
+        const gx1 = physX[i] / cellWPx - 0.5;
+        const gy1 = physY[i] / cellHPx - 0.5;
+        const ix1 = Math.floor(gx1);
+        const iy1 = Math.floor(gy1);
+        const dx1 = gx1 - ix1;
+        const dy1 = gy1 - iy1;
 
-        // Four CIC neighbors with periodic wrapping
-        const ix0 = ((ix % NX) + NX) % NX;
-        const iy0 = ((iy % NY) + NY) % NY;
-        const ix1 = (ix0 + 1) % NX;
-        const iy1 = (iy0 + 1) % NY;
+        const ix1_0 = ((ix1 % NX) + NX) % NX;
+        const iy1_0 = ((iy1 % NY) + NY) % NY;
+        const ix1_1 = (ix1_0 + 1) % NX;
+        const iy1_1 = (iy1_0 + 1) % NY;
 
-        grid[iy0 * NX + ix0] += (1 - dx) * (1 - dy);
-        grid[iy0 * NX + ix1] += dx * (1 - dy);
-        grid[iy1 * NX + ix0] += (1 - dx) * dy;
-        grid[iy1 * NX + ix1] += dx * dy;
+        grid1[iy1_0 * NX + ix1_0] += (1 - dx1) * (1 - dy1);
+        grid1[iy1_0 * NX + ix1_1] += dx1 * (1 - dy1);
+        grid1[iy1_1 * NX + ix1_0] += (1 - dx1) * dy1;
+        grid1[iy1_1 * NX + ix1_1] += dx1 * dy1;
+
+        // Second grid (shifted by 0.5 cells)
+        const gx2 = gx1 + 0.5;
+        const gy2 = gy1 + 0.5;
+        const ix2 = Math.floor(gx2);
+        const iy2 = Math.floor(gy2);
+        const dx2 = gx2 - ix2;
+        const dy2 = gy2 - iy2;
+
+        const ix2_0 = ((ix2 % NX) + NX) % NX;
+        const iy2_0 = ((iy2 % NY) + NY) % NY;
+        const ix2_1 = (ix2_0 + 1) % NX;
+        const iy2_1 = (iy2_0 + 1) % NY;
+
+        grid2[iy2_0 * NX + ix2_0] += (1 - dx2) * (1 - dy2);
+        grid2[iy2_0 * NX + ix2_1] += dx2 * (1 - dy2);
+        grid2[iy2_1 * NX + ix2_0] += (1 - dx2) * dy2;
+        grid2[iy2_1 * NX + ix2_1] += dx2 * dy2;
     }
 
     // Convert to overdensity δ = ρ/ρ̄ - 1
     for (let i = 0; i < NX * NY; i++) {
-        grid[i] = grid[i] / meanDensity - 1.0;
+        grid1[i] = grid1[i] / meanDensity - 1.0;
+        grid2[i] = grid2[i] / meanDensity - 1.0;
     }
 
-    // 2D FFT: row-by-row, then column-by-column
-    const re = new Float64Array(NX * NY);
-    const im = new Float64Array(NX * NY);
-    for (let i = 0; i < NX * NY; i++) re[i] = grid[i];
+    // 2D FFTs: row-by-row, then column-by-column for both grids
+    const re1 = new Float64Array(NX * NY);
+    const im1 = new Float64Array(NX * NY);
+    const re2 = new Float64Array(NX * NY);
+    const im2 = new Float64Array(NX * NY);
+
+    for (let i = 0; i < NX * NY; i++) {
+        re1[i] = grid1[i];
+        re2[i] = grid2[i];
+    }
 
     // Row FFTs (NX may be non-power-of-2 → Bluestein)
     const rowRe = new Float64Array(NX);
     const rowIm = new Float64Array(NX);
     for (let y = 0; y < NY; y++) {
         const off = y * NX;
-        for (let x = 0; x < NX; x++) { rowRe[x] = re[off + x]; rowIm[x] = 0; }
+
+        // Grid 1
+        for (let x = 0; x < NX; x++) { rowRe[x] = re1[off + x]; rowIm[x] = 0; }
         _fft_any(rowRe, rowIm, NX, false);
-        for (let x = 0; x < NX; x++) { re[off + x] = rowRe[x]; im[off + x] = rowIm[x]; }
+        for (let x = 0; x < NX; x++) { re1[off + x] = rowRe[x]; im1[off + x] = rowIm[x]; }
+
+        // Grid 2
+        for (let x = 0; x < NX; x++) { rowRe[x] = re2[off + x]; rowIm[x] = 0; }
+        _fft_any(rowRe, rowIm, NX, false);
+        for (let x = 0; x < NX; x++) { re2[off + x] = rowRe[x]; im2[off + x] = rowIm[x]; }
     }
 
     // Column FFTs (NY may be non-power-of-2 → Bluestein)
     const colRe = new Float64Array(NY);
     const colIm = new Float64Array(NY);
     for (let x = 0; x < NX; x++) {
-        for (let y = 0; y < NY; y++) { colRe[y] = re[y * NX + x]; colIm[y] = im[y * NX + x]; }
+        // Grid 1
+        for (let y = 0; y < NY; y++) { colRe[y] = re1[y * NX + x]; colIm[y] = im1[y * NX + x]; }
         _fft_any(colRe, colIm, NY, false);
-        for (let y = 0; y < NY; y++) { re[y * NX + x] = colRe[y]; im[y * NX + x] = colIm[y]; }
+        for (let y = 0; y < NY; y++) { re1[y * NX + x] = colRe[y]; im1[y * NX + x] = colIm[y]; }
+
+        // Grid 2
+        for (let y = 0; y < NY; y++) { colRe[y] = re2[y * NX + x]; colIm[y] = im2[y * NX + x]; }
+        _fft_any(colRe, colIm, NY, false);
+        for (let y = 0; y < NY; y++) { re2[y * NX + x] = colRe[y]; im2[y * NX + x] = colIm[y]; }
     }
 
     // Compute |δ(k)|² and CIC deconvolution, then bin radially
@@ -712,14 +754,27 @@ function computePowerSpectrum(physX, physY, N, SIM_W, SIM_H, pxPerMpc, panelId) 
             if (kMag >= kMax || kMag < kMin) continue;
 
             // CIC window deconvolution: W(k) = sinc(kx Lx/2NX) * sinc(ky Ly/2NY)
-            // For CIC: W² correction → divide |δk|² by W⁴
             const sx = (nx === 0) ? 1.0 : Math.sin(Math.PI * nx / NX) / (Math.PI * nx / NX);
             const sy = (ny === 0) ? 1.0 : Math.sin(Math.PI * ny / NY) / (Math.PI * ny / NY);
             const W2 = sx * sx * sy * sy;
             const W4 = W2 * W2;
 
             const idx = yi * NX + xi;
-            const power = (re[idx] * re[idx] + im[idx] * im[idx]) * norm / W4;
+
+            // Interlacing phase shift: un-shift the second grid by e^(-i*θ)
+            const theta = -Math.PI * (nx / NX + ny / NY);
+            const cosTheta = Math.cos(theta);
+            const sinTheta = Math.sin(theta);
+
+            // Apply rotation: (r2 + i*i2) * (cos + i*sin)
+            const r2_shift = re2[idx] * cosTheta - im2[idx] * sinTheta;
+            const i2_shift = re2[idx] * sinTheta + im2[idx] * cosTheta;
+
+            // Average the two grids: δ_int = 0.5 * (δ_1 + δ_2 * e^(-iθ))
+            const re_int = 0.5 * (re1[idx] + r2_shift);
+            const im_int = 0.5 * (im1[idx] + i2_shift);
+
+            const power = (re_int * re_int + im_int * im_int) * norm / W4;
 
             const logK = Math.log10(kMag);
             const bin = Math.floor((logK - logKMin) / dLogK);
