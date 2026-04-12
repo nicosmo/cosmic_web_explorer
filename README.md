@@ -84,6 +84,7 @@ Contributions, feature suggestions, and bug reports are highly welcome!
 * **Tracers & Trails:** View the standard mass tracer distribution, and toggle **History** (past trajectories) or **Vector** (exaggerated current velocity) modes to visualize bulk flows.
 * **Thermal (Gas) View:** Approximates gas heating in collapsed structures using additive radial gradients. Colors map to local density ($\text{Blue} \to \text{Cyan} \to \text{White} \to \text{Gold}$), showing gas heating as it falls into clusters.
 * **Initial Conditions Overlay:** Highlight the original $z=10$ Lagrangian grid positions to trace bulk flows from their origin.
+* **Custom Image Overlay:** Upload an external image (such as galaxy survey data or images from reference simulations) to compare directly against the evolving cosmic web. Includes dedicated sliders to finely adjust opacity, scale, and X/Y positioning for alignment.
 
 ### Analysis Tools
 * **Voronoi Tessellation:** Displays the Voronoi cells of tracers, highlighting underdense regions.
@@ -332,7 +333,7 @@ $$
 * **Code Generation:** Google Gemini Pro 3.0/3.1 and Claude Opus 4.5/4.6
 * **Core Libraries:** The void-finding visualization heavily relies on the excellent [d3-delaunay](https://github.com/d3/d3-delaunay) library for computational geometry.
 
-The authors of this code thank Julien Zoubian and Dennis Frei for their valuable contributions to the development of the code, as well as Julian Bautista, Marie-Claude Cousinou, Nico Hamaus, Geray Karademir, Arnaud de Mattia, and Alice Pisani for useful discussions and feedback. NS is supported by the French government’s France 2030 investment plan (A*MIDEX AMX-22-CEI-03).
+The authors of this code thank Julien Zoubian and Dennis Frei for their valuable contributions to the development of the code, as well as Julian Bautista, Marie-Claude Cousinou, Steffen Hagstotz, Nico Hamaus, Geray Karademir, Arnaud de Mattia, and Alice Pisani for useful discussions and feedback. NS is supported by the French government’s France 2030 investment plan (A*MIDEX AMX-22-CEI-03).
 
 ## Citation
 
