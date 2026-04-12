@@ -42,7 +42,7 @@ https://github.com/nicosmo/cosmic_web_explorer
     <script src="src/ui-components.js"></script>
     <script>document.write('<scr'+'ipt src="src/recorder.js?t='+Date.now()+'"><\/scr'+'ipt>')</script>
     <script data-goatcounter="https://nicosmo.goatcounter.com/count"
-        async src="//gc.zgo.at/count.js"></script> 
+        async src="//gc.zgo.at/count.js"></script>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -473,7 +473,7 @@ https://github.com/nicosmo/cosmic_web_explorer
             const [numCircles, setNumCircles] = useState(25);
             const [numTracers, setNumTracers] = useState(50000);
             const [boxSizeMpc, setBoxSizeMpc] = useState(1000);
-            const [initMode, setInitMode] = useState('bao');  // 'bao' or 'pk'
+            const [initMode, setInitMode] = useState('pk');  // 'bao' or 'pk'
 
             // Cosmology State
             const [cosmoMode, setCosmoMode] = useState('LCDM');
@@ -521,6 +521,30 @@ https://github.com/nicosmo/cosmic_web_explorer
             const [canvasSize, setCanvasSize] = useState({ w: window.innerWidth - SIDEBAR_W, h: window.innerHeight });
             const [renderTrigger, setRenderTrigger] = useState(0);
 
+            // --- Image Overlay State ---
+            const [showOverlayControls, setShowOverlayControls] = useState(false);
+            const [overlayImage, setOverlayImage] = useState(null);
+            const [overlayOpacity, setOverlayOpacity] = useState(0.5);
+            const [overlayScale, setOverlayScale] = useState(1.0);
+            const [overlayX, setOverlayX] = useState(0); // Percentage -100 to 100
+            const [overlayY, setOverlayY] = useState(0); // Percentage -100 to 100
+
+            const handleImageUpload = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        const img = new Image();
+                        img.onload = () => {
+                            setOverlayImage(img);
+                            setRenderTrigger(t => t + 1);
+                        };
+                        img.src = event.target.result;
+                    };
+                    reader.readAsDataURL(file);
+                }
+            };
+
             const [authorNames, setAuthorNames] = useState(['Simon Bouchard', 'Nico Schuster']);
             useEffect(() => {
                 if (Math.random() > 0.5) {
@@ -549,6 +573,9 @@ https://github.com/nicosmo/cosmic_web_explorer
             const playBtnRef = useRef(null);
             const cosmoRef = useRef(null);
             const toolsRef = useRef(null);
+            const initRef = useRef(null);
+            const compareRef = useRef(null);
+            const overlayRef = useRef(null);
 
             // --- Simulation Time Step ---
             const [simDeltaT, setSimDeltaT] = useState(0.002);
@@ -609,16 +636,35 @@ https://github.com/nicosmo/cosmic_web_explorer
 
             // --- Tutorial Data & Logic ---
             const tutorialSteps = [
+                { target: initRef, title: "Initial Conditions", content: "Start by choosing your Universe's blueprint. Select idealized BAO rings for pedagogical clarity, or a realistic Gaussian random field." },
                 { target: playBtnRef, title: "Time & Evolution", content: "Move through time using only linear theory, or hit Play to enable non-linear N-body gravity for more accurate physics on small scales." },
                 { target: cosmoRef, title: "Build Your Universe", content: "Change the dark matter and dark energy ratios, as well as cosmological models. Watch how it alters the final structures in the cosmic web." },
-                { target: toolsRef, title: "Analyze the Web", content: "Find voids, measure the power spectrum, and render the temperature of the gas." }
+                { target: compareRef, title: "Compare Cosmologies", content: "Enable split-screen mode to run two independent simulations side-by-side with identical initial conditions but different cosmological parameters." },
+                { target: toolsRef, title: "Analyze the Web", content: "Find voids, measure the power spectrum or other statistics." }
             ];
 
             const closeTutorial = () => setTutorialStep(0);
+            const handleStartTutorial = () => {
+                setIsSidebarCollapsed(false);
+                setSecEvolution(true);
+                setSecCosmology(true);
+                setSecTools(true);
+                setTutorialStep(1);
+            };
             const nextStep = () => {
                 if (tutorialStep === tutorialSteps.length) setTutorialStep(0);
                 else setTutorialStep(s => s + 1);
             };
+
+            // --- Auto-scroll sidebar during tutorial ---
+            useEffect(() => {
+                if (tutorialStep > 0 && tutorialSteps[tutorialStep - 1].target.current) {
+                    tutorialSteps[tutorialStep - 1].target.current.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'center'
+                    });
+                }
+            }, [tutorialStep]);
 
             useEffect(() => {
                 // Try external file first; fall back to inline blob for file:// protocol
@@ -1044,9 +1090,9 @@ https://github.com/nicosmo/cosmic_web_explorer
                     const gi = gcy * gcw + gcx;
                     const nx = nearX[gi];
                     const ny = nearY[gi];
-                    
+
                     if (nx < 0) continue;
-                    
+
                     const dx = nx - g.qx, dy = ny - g.qy;
                     if (dx * dx + dy * dy < snapR * snapR) {
                         targets[i * 2] = nx;
@@ -1061,7 +1107,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                 const forces = initMode === 'pk'
                     ? generatePkDisplacements(initialTracers, tracersPerPanel, SIM_W, SIM_H, omegaM, panelBoxMpc, seed)
                     : computeTracerForces(initialTracers, centers, BAO_RADIUS_PX, tracersPerPanel, SIM_W, SIM_H, seed, omegaM, panelBoxMpc);
-                
+
                 forces._cosmoTextTargets = getTextImprintTargets(_cosmoTextKick);
                 return forces;
             }, [initialTracers, centers, BAO_RADIUS_PX, tracersPerPanel, SIM_W, SIM_H, seed, omegaM, initMode, panelBoxMpc, _cosmoTextKick]);
@@ -1071,7 +1117,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                 const forces = initMode === 'pk'
                     ? generatePkDisplacements(initialTracers, tracersPerPanel, SIM_W, SIM_H, omegaMB, panelBoxMpc, seed)
                     : computeTracerForces(initialTracers, centers, BAO_RADIUS_PX_B, tracersPerPanel, SIM_W, SIM_H, seed, omegaMB, panelBoxMpc);
-                
+
                 forces._cosmoTextTargets = getTextImprintTargets(_cosmoTextKick);
                 return forces;
             }, [splitScreen, initialTracers, centers, BAO_RADIUS_PX_B, tracersPerPanel, SIM_W, SIM_H, seed, tracerForces, omegaMB, initMode, panelBoxMpc, _cosmoTextKick]);
@@ -1079,7 +1125,7 @@ https://github.com/nicosmo/cosmic_web_explorer
             const tracerForces2 = useMemo(() => {
                 const f2 = compute2LPTDisplacement(tracerForces, initialTracers, tracersPerPanel, SIM_W, SIM_H);
                 const targets = tracerForces._cosmoTextTargets;
-                
+
                 if (targets) {
                     // Calculate the exact physics scales at z=0
                     const densityFactor = Math.pow(omegaM / 0.3, 0.6);
@@ -1091,11 +1137,11 @@ https://github.com/nicosmo/cosmic_web_explorer
                         if (tx !== -1) {
                             const ty = targets[i * 2 + 1];
                             const g = initialTracers[i];
-                            
+
                             // Find where 1LPT would naturally put the particle at z=0
                             const naturalX = g.qx + tracerForces[i * 2] * dispScale;
                             const naturalY = g.qy + tracerForces[i * 2 + 1] * dispScale;
-                            
+
                             // Overwrite 2LPT to bridge the exact gap to the text stroke
                             f2[i * 2] = (tx - naturalX) / disp2Scale;
                             f2[i * 2 + 1] = (ty - naturalY) / disp2Scale;
@@ -1109,7 +1155,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                 if (!splitScreen) return tracerForces2;
                 const f2 = compute2LPTDisplacement(tracerForcesB, initialTracers, tracersPerPanel, SIM_W, SIM_H);
                 const targets = tracerForcesB._cosmoTextTargets;
-                
+
                 if (targets) {
                     const densityFactor = Math.pow(omegaMB / 0.3, 0.6);
                     const dispScale = 1.0 * DISP_SCALE_FACTOR * Math.min(1.0, RAW_SCALE_UNIFIED) * densityFactor;
@@ -1120,10 +1166,10 @@ https://github.com/nicosmo/cosmic_web_explorer
                         if (tx !== -1) {
                             const ty = targets[i * 2 + 1];
                             const g = initialTracers[i];
-                            
+
                             const naturalX = g.qx + tracerForcesB[i * 2] * dispScale;
                             const naturalY = g.qy + tracerForcesB[i * 2 + 1] * dispScale;
-                            
+
                             f2[i * 2] = (tx - naturalX) / disp2Scale;
                             f2[i * 2 + 1] = (ty - naturalY) / disp2Scale;
                         }
@@ -2051,6 +2097,36 @@ https://github.com/nicosmo/cosmic_web_explorer
                     gl.clear(gl.COLOR_BUFFER_BIT);
                     ctx.clearRect(0, 0, cWidth, cHeight);
 
+                    // --- DRAW IMAGE OVERLAY (Global Across Both Panels) ---
+                    if (overlayImage && showOverlayControls) {
+                        ctx.save();
+                        ctx.globalAlpha = overlayOpacity;
+
+                        // Calculate scaling based on the TOTAL width (canvasSize.w) instead of individual panel width
+                        const scaleX = canvasSize.w / overlayImage.width;
+                        const scaleY = canvasSize.h / overlayImage.height;
+                        const baseScale = Math.min(scaleX, scaleY);
+                        const finalScale = baseScale * overlayScale;
+                        const imgW = overlayImage.width * finalScale;
+                        const imgH = overlayImage.height * finalScale;
+
+                        // Calculate the center point relative to the entire app window
+                        const globalCenterX = (canvasSize.w / 2) + (overlayX / 100 * canvasSize.w);
+                        const globalCenterY = (canvasSize.h / 2) + (overlayY / 100 * canvasSize.h);
+
+                        // If we are in Panel B, we shift the drawing to the left by the width of Panel A + Divider
+                        const panelOffsetX = isB ? (SIM_W + DIVIDER_WIDTH) : 0;
+
+                        ctx.drawImage(
+                            overlayImage,
+                            (globalCenterX - imgW / 2) - panelOffsetX,
+                            globalCenterY - imgH / 2,
+                            imgW,
+                            imgH
+                        );
+                        ctx.restore();
+                    }
+
                     let pSmoothedDensities = null;
                     let pMeanDensity = 0;
 
@@ -2332,8 +2408,8 @@ https://github.com/nicosmo/cosmic_web_explorer
                     <div style={{ position: 'absolute', top: 0, left: SIDEBAR_W, width: canvasSize.w, height: canvasSize.h, display: 'flex', flexDirection: 'row' }}>
                         {/* Panel A */}
                         <div style={{ position: 'relative', width: splitScreen ? panelW : canvasSize.w, height: canvasSize.h, flexShrink: 0 }}>
-                            <canvas ref={webglCanvasRef} width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}/>
-                            <canvas ref={uiCanvasRef} width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}/>
+                            <canvas role="img" aria-label="Cosmic Web Simulation View Panel A" ref={webglCanvasRef} width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}/>
+                            <canvas ref={uiCanvasRef} aria-hidden="true" width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}/>
                         </div>
                         {/* Divider */}
                         {splitScreen && (
@@ -2342,8 +2418,8 @@ https://github.com/nicosmo/cosmic_web_explorer
                         {/* Panel B */}
                         {splitScreen && (
                             <div style={{ position: 'relative', width: panelW, height: canvasSize.h, flexShrink: 0 }}>
-                                <canvas ref={webglCanvasRefB} width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}/>
-                                <canvas ref={uiCanvasRefB} width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}/>
+                                <canvas role="img" aria-label="Cosmic Web Simulation View Panel B" ref={webglCanvasRefB} width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}/>
+                                <canvas ref={uiCanvasRefB} aria-hidden="true" width={SIM_W} height={SIM_H} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}/>
                             </div>
                         )}
                     </div>
@@ -2390,13 +2466,13 @@ https://github.com/nicosmo/cosmic_web_explorer
                                     <h1 className="text-xl font-bold text-blue-400">
                                         Cosmic Web Explorer
                                     </h1>
-                                    <button onClick={() => setTutorialStep(1)} className="px-2 py-0.5 bg-blue-600/20 text-blue-400 hover:bg-blue-600/40 hover:text-white rounded-full text-[10px] font-bold tracking-wide transition-colors border border-blue-500/30">
+                                    <button onClick={handleStartTutorial} className="px-2 py-0.5 bg-blue-600/20 text-blue-400 hover:bg-blue-600/40 hover:text-white rounded-full text-[10px] font-bold tracking-wide transition-colors border border-blue-500/30">
                                         ? Guide
                                     </button>
                                 </div>
 
                                 <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                                    A qualitative visualization of cosmic evolution. {initMode === 'pk' ? 'From realistic Eisenstein & Hu P(k) initial conditions' : 'From idealized BAO initial conditions'}, cosmic expansion and gravity sculpt the Universe into a complex network of filaments and voids.
+                                    A qualitative visualization of cosmic evolution. {initMode === 'pk' ? 'From realistic Eisenstein & Hu P(k) initial conditions (idealized BAO also available)' : 'From idealized BAO initial conditions (realistic P(k) also available)'}, cosmic expansion and gravity sculpt the Universe into a complex network of filaments and voids.
                                     <span className="mt-1 block">
                                         Initial concept by {authorNames[0]} & {authorNames[1]}. Developed by Nico Schuster.
                                     </span>
@@ -2423,6 +2499,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                             </div>
 
                             <button
+                                aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
                                 onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
                                 className="group relative p-2 rounded hover:bg-white/10 text-slate-400 transition-colors"
                             >
@@ -2445,11 +2522,15 @@ https://github.com/nicosmo/cosmic_web_explorer
                         {!isSidebarCollapsed && (
                             <div className="flex-1 overflow-y-auto p-6 space-y-5 animate-in fade-in duration-300">
                                 <div className="space-y-3">
-                                    <div className="flex items-center gap-3 cursor-pointer select-none" onClick={() => setSecEvolution(!secEvolution)}>
-                                        <label className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 cursor-pointer">
+                                    <div className="flex items-center gap-3 select-none">
+                                        <button
+                                            aria-expanded={secEvolution}
+                                            onClick={() => setSecEvolution(!secEvolution)}
+                                            className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 cursor-pointer hover:text-slate-300 transition-colors"
+                                        >
                                             <ChevronDown size={12} className={`transition-transform duration-200 ${secEvolution ? '' : '-rotate-90'}`}/> Evolution
-                                        </label>
-                                        <div className="flex gap-1 ml-auto" onClick={e => e.stopPropagation()}>
+                                        </button>
+                                        <div ref={initRef} className="flex gap-1 ml-auto" onClick={e => e.stopPropagation()}>
                                             <TooltipWrapper text="Initializes the Universe with idealized Baryonic Acoustic Oscillation (BAO) rings. Tracers are displaced around manual BAO center points, then evolved with 1LPT + 2LPT. This artificially isolates the BAO sound horizon scale to clearly show how these structures evolve.">
                                                 <button
                                                     onClick={() => { if (initMode !== 'bao') { setInitMode('bao'); handleRestart(); } }}
@@ -2476,6 +2557,8 @@ https://github.com/nicosmo/cosmic_web_explorer
                                         </div>
                                         <TooltipWrapper text="Manually moving the slider evolves tracers only according to Lagrangian Perturbation Theory. For more accurate physics, click Play with 'Local Gravity' and 'Structure Sharpening' (see below) enabled.">
                                             <input
+                                                aria-label="Cosmic time slider"
+                                                aria-valuetext={`Redshift ${redshift.toFixed(2)}`}
                                                 type="range"
                                                 min={cosmologyLUT.minTime}
                                                 max="1.0"
@@ -2490,7 +2573,9 @@ https://github.com/nicosmo/cosmic_web_explorer
                                             <span>Today (z=0)</span>
                                         </div>
                                         <div ref={playBtnRef} className="flex items-center gap-2 mt-2">
-                                            <button onClick={handlePlayToggle} disabled={isRecording} className={`flex-1 py-2.5 rounded flex items-center justify-center gap-1.5 text-sm font-semibold tracking-wide transition-colors ${isRecording ? 'bg-slate-800 text-slate-600 cursor-not-allowed' : isPlaying ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-blue-600 text-white hover:bg-blue-500'}`}>
+                                            <button
+                                                aria-label={isPlaying ? "Pause simulation" : (!isPlaying && cosmicTime >= 1.0) ? "Restart simulation" : "Play simulation"}
+                                                onClick={handlePlayToggle} disabled={isRecording} className={`flex-1 py-2.5 rounded flex items-center justify-center gap-1.5 text-sm font-semibold tracking-wide transition-colors ${isRecording ? 'bg-slate-800 text-slate-600 cursor-not-allowed' : isPlaying ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-blue-600 text-white hover:bg-blue-500'}`}>
                                                 {isPlaying && !isRecording ? (
                                                     <><Pause size={14}/> Pause</>
                                                 ) : (!isPlaying && cosmicTime >= 1.0) ? (
@@ -2605,7 +2690,9 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                 </TooltipWrapper>
                                             )}
                                             <label className="toggle-switch ml-auto">
-                                                <input type="checkbox" checked={enableLocalGravity} onChange={e => setEnableLocalGravity(e.target.checked)}/>
+                                                <input
+                                                    aria-label="Enable Local Gravity"
+                                                    type="checkbox" checked={enableLocalGravity} onChange={e => setEnableLocalGravity(e.target.checked)}/>
                                                 <span className="slider"></span>
                                             </label>
                                         </div>
@@ -2620,7 +2707,9 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                 <div className="w-4 h-4 bg-slate-800 rounded-full flex items-center justify-center text-[10px]">?</div>
                                             </TooltipWrapper>
                                             <label className="toggle-switch ml-auto">
-                                                <input type="checkbox" checked={useAdhesion} onChange={e => setUseAdhesion(e.target.checked)}/>
+                                                <input
+                                                    aria-label="Enable Structure Sharpening"
+                                                    type="checkbox" checked={useAdhesion} onChange={e => setUseAdhesion(e.target.checked)}/>
                                                 <span className="slider"></span>
                                             </label>
                                         </div>
@@ -2633,23 +2722,31 @@ https://github.com/nicosmo/cosmic_web_explorer
                                 </div>
 
                                 <div ref={cosmoRef} className="space-y-3">
-                                    <div className="flex items-center justify-between cursor-pointer select-none" onClick={() => setSecCosmology(!secCosmology)}>
-                                        <label className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 cursor-pointer">
+                                    <div className="flex items-center justify-between select-none">
+                                        <button
+                                            aria-expanded={secCosmology}
+                                            onClick={() => setSecCosmology(!secCosmology)}
+                                            className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 cursor-pointer hover:text-slate-300 transition-colors"
+                                        >
                                             <ChevronDown size={12} className={`transition-transform duration-200 ${secCosmology ? '' : '-rotate-90'}`}/> Cosmology {splitScreen && <span className="text-[10px] text-amber-400 font-normal ml-1">(Panel A)</span>}
-                                        </label>
-                                        <div className="flex items-center gap-2 cursor-pointer" onClick={e => { e.stopPropagation(); toggleFlat(); }}>
-                                            <span className="text-[10px] text-slate-400 uppercase">Flat Universe</span>
+                                        </button>
+                                        <button
+                                            className="flex items-center gap-2 cursor-pointer group focus:outline-none"
+                                            onClick={toggleFlat}
+                                            aria-label="Toggle Flat Universe constraints"
+                                        >
+                                            <span className="text-[10px] text-slate-400 uppercase group-hover:text-slate-200 transition-colors">Flat Universe</span>
                                             <div className={`w-8 h-4 rounded-full p-0.5 transition-colors ${isFlat ? 'bg-blue-600' : 'bg-slate-700'}`}>
                                                 <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${isFlat ? 'translate-x-4' : 'translate-x-0'}`}></div>
                                             </div>
-                                        </div>
+                                        </button>
                                     </div>
                                     {secCosmology && (<>
                                     <div className="p-3 bg-slate-900/60 rounded border border-white/10 space-y-4 animate-in fade-in duration-200">
-                                        <div className="btn-group mb-2">
-                                            <button className={cosmoMode === 'LCDM' ? 'active' : ''} onClick={() => handleCosmoModeChange('LCDM')}>ΛCDM</button>
-                                            <button className={cosmoMode === 'wCDM' ? 'active' : ''} onClick={() => handleCosmoModeChange('wCDM')}>wCDM</button>
-                                            <button className={cosmoMode === 'w0wa' ? 'active' : ''} onClick={() => handleCosmoModeChange('w0wa')}>w₀wₐ</button>
+                                        <div className="btn-group mb-2" role="group" aria-label="Cosmological Model Panel A">
+                                            <button aria-pressed={cosmoMode === 'LCDM'} className={cosmoMode === 'LCDM' ? 'active' : ''} onClick={() => handleCosmoModeChange('LCDM')}>ΛCDM</button>
+                                            <button aria-pressed={cosmoMode === 'wCDM'} className={cosmoMode === 'wCDM' ? 'active' : ''} onClick={() => handleCosmoModeChange('wCDM')}>wCDM</button>
+                                            <button aria-pressed={cosmoMode === 'w0wa'} className={cosmoMode === 'w0wa' ? 'active' : ''} onClick={() => handleCosmoModeChange('w0wa')}>w₀wₐ</button>
                                         </div>
 
                                         {(cosmoMode === 'wCDM' || cosmoMode === 'w0wa') && (
@@ -2658,7 +2755,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                     <span className="text-slate-400">Eq. of State (w₀)</span>
                                                     <span className="text-slate-200">{w0.toFixed(2)}</span>
                                                 </div>
-                                                <input type="range" min="-2.0" max="-0.33" step="0.01" value={w0} onChange={handleW0Change} className="w-full accent-amber-500"/>
+                                                <input aria-label="Equation of State w0" aria-valuetext={w0.toFixed(2)} type="range" min="-2.0" max="-0.33" step="0.01" value={w0} onChange={handleW0Change} className="w-full accent-amber-500"/>
                                             </div>
                                         )}
 
@@ -2668,7 +2765,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                     <span className="text-slate-400">Evolution (wₐ)</span>
                                                     <span className="text-slate-200">{wa.toFixed(2)}</span>
                                                 </div>
-                                                <input type="range" min="-1.0" max="1.0" step="0.01" value={wa} onChange={handleWaChange} className="w-full accent-amber-500"/>
+                                                <input aria-label="Evolution wa" aria-valuetext={wa.toFixed(2)} type="range" min="-1.0" max="1.0" step="0.01" value={wa} onChange={handleWaChange} className="w-full accent-amber-500"/>
                                             </div>
                                         )}
 
@@ -2677,18 +2774,19 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                 <span className="text-slate-400">Matter (&Omega;<sub>m</sub>)</span>
                                                 <span className="text-slate-200">{omegaM.toFixed(2)}</span>
                                             </div>
-                                            <input type="range" min="0.01" max="1.0" step="0.01" value={omegaM} onChange={handleOmegaMChange} className="w-full accent-purple-500"/>
+                                            <input aria-label="Matter Density Omega m" aria-valuetext={omegaM.toFixed(2)} type="range" min="0.01" max="1.0" step="0.01" value={omegaM} onChange={handleOmegaMChange} className="w-full accent-purple-500"/>
                                         </div>
                                         <div className={`space-y-1 transition-opacity ${isFlat ? 'opacity-70' : 'opacity-100'}`}>
                                             <div className="flex justify-between text-xs">
                                                 <span className="text-slate-400">Dark Energy (&Omega;<sub>&Lambda;</sub>)</span>
                                                 <span className="text-slate-200">{omegaL.toFixed(2)}</span>
                                             </div>
-                                            <input type="range" min="0" max={isFlat ? "0.99" : "1.0"} step="0.01" value={omegaL} onChange={handleOmegaLChange} className={`w-full ${isFlat ? 'accent-slate-500 cursor-not-allowed' : 'accent-purple-500'}`}/>
+                                            <input aria-label="Dark Energy Density Omega Lambda" aria-valuetext={omegaL.toFixed(2)} type="range" min="0" max={isFlat ? "0.99" : "1.0"} step="0.01" value={omegaL} onChange={handleOmegaLChange} className={`w-full ${isFlat ? 'accent-slate-500 cursor-not-allowed' : 'accent-purple-500'}`}/>
                                         </div>
                                     </div>
 
                                     {/* Split-Screen Comparison Toggle with Tooltip */}
+                                    <div ref={compareRef}>
                                     <TooltipWrapper
                                         text="Enable split-screen mode to run two independent simulations with different cosmological parameters side-by-side."
                                         className="w-full"
@@ -2703,24 +2801,29 @@ https://github.com/nicosmo/cosmic_web_explorer
                                             <Columns size={14} /> {splitScreen ? 'Exit Comparison' : 'Compare Cosmologies'}
                                         </button>
                                     </TooltipWrapper>
+                                </div>
 
                                     {/* Panel B Cosmology Controls */}
                                     {splitScreen && (
                                         <div className="space-y-3 animate-in fade-in slide-in-from-top-1">
                                             <div className="flex items-center justify-between">
                                                 <label className="text-xs font-bold text-amber-400 uppercase tracking-widest">Panel B</label>
-                                                <div className="flex items-center gap-2 cursor-pointer" onClick={toggleFlatB}>
-                                                    <span className="text-[10px] text-slate-400 uppercase">Flat</span>
+                                                <button
+                                                    className="flex items-center gap-2 cursor-pointer group focus:outline-none"
+                                                    onClick={toggleFlatB}
+                                                    aria-label="Toggle Flat Universe constraints for Panel B"
+                                                >
+                                                    <span className="text-[10px] text-slate-400 uppercase group-hover:text-slate-200 transition-colors">Flat</span>
                                                     <div className={`w-8 h-4 rounded-full p-0.5 transition-colors ${isFlatB ? 'bg-blue-600' : 'bg-slate-700'}`}>
                                                         <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${isFlatB ? 'translate-x-4' : 'translate-x-0'}`}></div>
                                                     </div>
-                                                </div>
+                                                </button>
                                             </div>
                                             <div className="p-3 bg-slate-900/60 rounded border border-amber-500/20 space-y-4">
-                                                <div className="btn-group mb-2">
-                                                    <button className={cosmoModeB === 'LCDM' ? 'active' : ''} onClick={() => handleCosmoModeChangeB('LCDM')}>ΛCDM</button>
-                                                    <button className={cosmoModeB === 'wCDM' ? 'active' : ''} onClick={() => handleCosmoModeChangeB('wCDM')}>wCDM</button>
-                                                    <button className={cosmoModeB === 'w0wa' ? 'active' : ''} onClick={() => handleCosmoModeChangeB('w0wa')}>w₀wₐ</button>
+                                                <div className="btn-group mb-2" role="group" aria-label="Cosmological Model Panel B">
+                                                    <button aria-pressed={cosmoModeB === 'LCDM'} className={cosmoModeB === 'LCDM' ? 'active' : ''} onClick={() => handleCosmoModeChangeB('LCDM')}>ΛCDM</button>
+                                                    <button aria-pressed={cosmoModeB === 'wCDM'} className={cosmoModeB === 'wCDM' ? 'active' : ''} onClick={() => handleCosmoModeChangeB('wCDM')}>wCDM</button>
+                                                    <button aria-pressed={cosmoModeB === 'w0wa'} className={cosmoModeB === 'w0wa' ? 'active' : ''} onClick={() => handleCosmoModeChangeB('w0wa')}>w₀wₐ</button>
                                                 </div>
 
                                                 {(cosmoModeB === 'wCDM' || cosmoModeB === 'w0wa') && (
@@ -2729,7 +2832,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                             <span className="text-slate-400">Eq. of State (w₀)</span>
                                                             <span className="text-slate-200">{w0B.toFixed(2)}</span>
                                                         </div>
-                                                        <input type="range" min="-2.0" max="-0.33" step="0.01" value={w0B} onChange={handleW0ChangeB} className="w-full accent-amber-500"/>
+                                                        <input aria-label="Panel B Equation of State w0" aria-valuetext={w0B.toFixed(2)} type="range" min="-2.0" max="-0.33" step="0.01" value={w0B} onChange={handleW0ChangeB} className="w-full accent-amber-500"/>
                                                     </div>
                                                 )}
 
@@ -2739,7 +2842,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                             <span className="text-slate-400">Evolution (wₐ)</span>
                                                             <span className="text-slate-200">{waB.toFixed(2)}</span>
                                                         </div>
-                                                        <input type="range" min="-1.0" max="1.0" step="0.01" value={waB} onChange={handleWaChangeB} className="w-full accent-amber-500"/>
+                                                        <input aria-label="Panel B Evolution wa" aria-valuetext={waB.toFixed(2)} type="range" min="-1.0" max="1.0" step="0.01" value={waB} onChange={handleWaChangeB} className="w-full accent-amber-500"/>
                                                     </div>
                                                 )}
 
@@ -2748,14 +2851,14 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                         <span className="text-slate-400">Matter (&Omega;<sub>m</sub>)</span>
                                                         <span className="text-slate-200">{omegaMB.toFixed(2)}</span>
                                                     </div>
-                                                    <input type="range" min="0.01" max="1.0" step="0.01" value={omegaMB} onChange={handleOmegaMChangeB} className="w-full accent-amber-500"/>
+                                                    <input aria-label="Panel B Matter Density Omega m" aria-valuetext={omegaMB.toFixed(2)} type="range" min="0.01" max="1.0" step="0.01" value={omegaMB} onChange={handleOmegaMChangeB} className="w-full accent-amber-500"/>
                                                 </div>
                                                 <div className={`space-y-1 transition-opacity ${isFlatB ? 'opacity-70' : 'opacity-100'}`}>
                                                     <div className="flex justify-between text-xs">
                                                         <span className="text-slate-400">Dark Energy (&Omega;<sub>&Lambda;</sub>)</span>
                                                         <span className="text-slate-200">{omegaLB.toFixed(2)}</span>
                                                     </div>
-                                                    <input type="range" min="0" max={isFlatB ? "0.99" : "1.0"} step="0.01" value={omegaLB} onChange={handleOmegaLChangeB} className={`w-full ${isFlatB ? 'accent-slate-500 cursor-not-allowed' : 'accent-amber-500'}`}/>
+                                                    <input aria-label="Panel B Dark Energy Density Omega Lambda" aria-valuetext={omegaLB.toFixed(2)} type="range" min="0" max={isFlatB ? "0.99" : "1.0"} step="0.01" value={omegaLB} onChange={handleOmegaLChangeB} className={`w-full ${isFlatB ? 'accent-slate-500 cursor-not-allowed' : 'accent-amber-500'}`}/>
                                                 </div>
                                             </div>
                                         </div>
@@ -2764,9 +2867,13 @@ https://github.com/nicosmo/cosmic_web_explorer
                                 </div>
 
                                 <div ref={toolsRef} className="space-y-3">
-                                    <label className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 cursor-pointer select-none" onClick={() => setSecTools(!secTools)}>
+                                    <button
+                                        aria-expanded={secTools}
+                                        onClick={() => setSecTools(!secTools)}
+                                        className="w-full text-left text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 cursor-pointer select-none hover:text-slate-300 transition-colors"
+                                    >
                                         <ChevronDown size={12} className={`transition-transform duration-200 ${secTools ? '' : '-rotate-90'}`}/> View & Tools
-                                    </label>
+                                    </button>
                                     {secTools && (
                                     <div className="space-y-3 p-3 bg-slate-900/60 rounded border border-white/10 animate-in fade-in duration-200">
 
@@ -2813,6 +2920,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                             <span className="text-slate-200">{voidThreshold.toFixed(2)}× mean density</span>
                                                         </div>
                                                         <input
+                                                            aria-label="Void Color Cutoff Threshold" aria-valuetext={`${voidThreshold.toFixed(2)} times mean density`}
                                                             type="range"
                                                             min="0.0"
                                                             max="10.0"
@@ -2829,6 +2937,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                             <span className="text-slate-200">{minVoidRadius} Mpc</span>
                                                         </div>
                                                         <input
+                                                            aria-label="Minimum Void Radius" aria-valuetext={`${minVoidRadius} Megaparsecs`}
                                                             type="range"
                                                             min="0"
                                                             max="30"
@@ -2845,9 +2954,10 @@ https://github.com/nicosmo/cosmic_web_explorer
                                             {showVoids && (
                                                 <div className="space-y-1">
                                                     <span className="text-xs text-slate-400 block mb-1">Center Definition</span>
-                                                    <div className="btn-group">
-                                                        <TooltipWrapper text="Geometric center of the void boundary, often leading to slightly higher densities in the innermost regions and may not align with the point of lowest density." className="flex-1">
+                                                    <div className="btn-group" role="group" aria-label="Void Center Definition">
+                                                        <TooltipWrapper text="Geometric center of the void boundary..." className="flex-1">
                                                             <button
+                                                                aria-pressed={voidCenterMode === 'geometric'}
                                                                 className={voidCenterMode === 'geometric' ? 'active' : ''}
                                                                 onClick={() => setVoidCenterMode('geometric')}
                                                             >
@@ -2870,9 +2980,10 @@ https://github.com/nicosmo/cosmic_web_explorer
                                             {showVoids && showVoidProfile && (
                                                 <div className="space-y-1 mt-2 border-t border-white/5 pt-2">
                                                     <span className="text-xs text-slate-400 block mb-1">Void Profile Method</span>
-                                                    <div className="btn-group">
-                                                        <TooltipWrapper text="Median of individual profiles. Best for removing outliers (e.g. contaminated voids)." className="flex-1">
+                                                    <div className="btn-group" role="group" aria-label="Void Profile Calculation Method">
+                                                        <TooltipWrapper text="Median of individual profiles..." className="flex-1">
                                                             <button
+                                                                aria-pressed={profileMode === 'median'}
                                                                 className={profileMode === 'median' ? 'active' : ''}
                                                                 onClick={() => setProfileMode('median')}
                                                             >
@@ -2955,7 +3066,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                 <span className="text-slate-400">Field of View</span>
                                                 <span className="text-slate-200">{boxSizeMpc} Mpc</span>
                                             </div>
-                                            <input type="range" min="500" max="3000" step="50" value={boxSizeMpc} onChange={(e) => {
+                                            <input aria-label="Field of View" aria-valuetext={`${boxSizeMpc} Megaparsecs`} type="range" min="500" max="3000" step="50" value={boxSizeMpc} onChange={(e) => {
                                                 setBoxSizeMpc(parseInt(e.target.value));
                                                 handleRestart();
                                             }} className="w-full accent-teal-500"/>
@@ -2966,7 +3077,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                 <span className="text-slate-400">BAO Rings</span>
                                                 <span className="text-slate-200">{numCircles}</span>
                                             </div>
-                                            <input type="range" min="1" max="200" step="1" value={numCircles} onChange={(e) => {
+                                            <input aria-label="Number of BAO Rings" aria-valuetext={numCircles} type="range" min="1" max="200" step="1" value={numCircles} onChange={(e) => {
                                                 setNumCircles(parseInt(e.target.value));
                                                 handleRestart();
                                             }} className="w-full accent-teal-500"/>
@@ -2977,7 +3088,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                 <span className="text-slate-400">CDM Tracers</span>
                                                 <span className="text-slate-200">{numTracers.toLocaleString()}</span>
                                             </div>
-                                            <input type="range" min={Math.log10(20000)} max={Math.ceil(Math.log10(200000) * 100) / 100} step="0.01" value={Math.log10(numTracers)} onChange={(e) => {
+                                            <input aria-label="Number of CDM Tracers" aria-valuetext={numTracers.toLocaleString()} type="range" min={Math.log10(20000)} max={Math.ceil(Math.log10(200000) * 100) / 100} step="0.01" value={Math.log10(numTracers)} onChange={(e) => {
                                                 let val = Math.round(Math.pow(10, parseFloat(e.target.value)));
                                                 const limit = 200000;
                                                 if (val > limit) val = limit;
@@ -2990,7 +3101,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                         <div className="mt-3 flex items-center justify-between">
                                             <span className="text-xs text-slate-400">Show BAO density overlay</span>
                                             <label className="toggle-switch scale-75 origin-right">
-                                                <input type="checkbox" checked={showDensity} onChange={e => setShowDensity(e.target.checked)}/>
+                                                <input aria-label="Show BAO density overlay" type="checkbox" checked={showDensity} onChange={e => setShowDensity(e.target.checked)}/>
                                                 <span className="slider"></span>
                                             </label>
                                         </div>
@@ -3018,7 +3129,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                                     </TooltipWrapper>
                                                 </div>
                                             </div>
-                                            <input type="range" min="0" max="100" step="1" value={trailPercentage} onChange={(e) => setTrailPercentage(parseInt(e.target.value))} className="w-full accent-teal-500"/>
+                                            <input aria-label="Overlay Sample Percentage" aria-valuetext={`${trailPercentage} percent`} type="range" min="0" max="100" step="1" value={trailPercentage} onChange={(e) => setTrailPercentage(parseInt(e.target.value))} className="w-full accent-teal-500"/>
                                         </div>
 
                                         <div className="mt-3 pt-3 border-t border-white/5 flex items-center gap-2">
@@ -3082,6 +3193,68 @@ https://github.com/nicosmo/cosmic_web_explorer
                                             )}
                                         </div>
 
+                                        {/* --- Image Overlay --- */}
+                                        <div ref={overlayRef} className="mt-3 pt-3 border-t border-white/5">
+                                            <label className="flex items-center gap-2 cursor-pointer select-none">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={showOverlayControls}
+                                                    onChange={(e) => {
+                                                        const checked = e.target.checked;
+                                                        setShowOverlayControls(checked);
+                                                        // REMOVED: setOverlayImage(null) and slider resets
+                                                        setRenderTrigger(t => t + 1);
+                                                    }}
+                                                    className="accent-blue-500 w-3.5 h-3.5"
+                                                />
+                                                <span className="text-xs text-slate-300 font-medium">Overlay your own image</span>
+                                                <TooltipWrapper align="bottom" text="Upload an external image (e.g., a numerical simulation image or galaxy survey data) to compare with the simulation. The image is layered above tracers but behind the UI charts. Use the sliders to align structures.">
+                                                    <span className="ml-auto text-slate-500 hover:text-slate-300 cursor-help text-xs">ⓘ</span>
+                                                </TooltipWrapper>
+                                            </label>
+                                            {showOverlayControls && (
+                                                <div className="space-y-3 mt-3 animate-in fade-in slide-in-from-top-1">
+                                                    <input
+                                                        aria-label="Upload Overlay Image"
+                                                        type="file" accept="image/*" onChange={handleImageUpload}
+                                                        className="text-[10px] text-slate-400 w-full file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-[10px] file:bg-slate-800 file:text-slate-300 hover:file:bg-slate-700"
+                                                    />
+                                                    {overlayImage && (
+                                                        <div className="space-y-2 p-2 bg-slate-900/50 rounded border border-white/5">
+                                                            <div className="flex flex-col gap-1">
+                                                                <div className="flex justify-between text-[10px] text-slate-400">
+                                                                    <span>Opacity</span>
+                                                                    <span>{Math.round(overlayOpacity * 100)}%</span>
+                                                                </div>
+                                                                <input aria-label="Image Opacity" type="range" min="0" max="1" step="0.05" value={overlayOpacity} onChange={e => { setOverlayOpacity(parseFloat(e.target.value)); setRenderTrigger(t => t + 1); }} className="w-full accent-blue-500"/>
+                                                            </div>
+                                                            <div className="flex flex-col gap-1">
+                                                                <div className="flex justify-between text-[10px] text-slate-400">
+                                                                    <span>Scale</span>
+                                                                    <span>{overlayScale.toFixed(2)}x</span>
+                                                                </div>
+                                                                <input aria-label="Image Scale" type="range" min="0.1" max="5.0" step="0.05" value={overlayScale} onChange={e => { setOverlayScale(parseFloat(e.target.value)); setRenderTrigger(t => t + 1); }} className="w-full accent-blue-500"/>
+                                                            </div>
+                                                            <div className="flex flex-col gap-1">
+                                                                <div className="flex justify-between text-[10px] text-slate-400">
+                                                                    <span>X Offset</span>
+                                                                    <span>{overlayX}%</span>
+                                                                </div>
+                                                                <input aria-label="Image X Offset" type="range" min="-100" max="100" step="1" value={overlayX} onChange={e => { setOverlayX(parseInt(e.target.value)); setRenderTrigger(t => t + 1); }} className="w-full accent-blue-500"/>
+                                                            </div>
+                                                            <div className="flex flex-col gap-1">
+                                                                <div className="flex justify-between text-[10px] text-slate-400">
+                                                                    <span>Y Offset</span>
+                                                                    <span>{overlayY}%</span>
+                                                                </div>
+                                                                <input aria-label="Image Y Offset" type="range" min="-100" max="100" step="1" value={overlayY} onChange={e => { setOverlayY(parseInt(e.target.value)); setRenderTrigger(t => t + 1); }} className="w-full accent-blue-500"/>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+
                                     </div>
                                     )}
                                 </div>
@@ -3091,6 +3264,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                         {isSidebarCollapsed && (
                             <div className="flex flex-col items-center gap-6 mt-6 animate-in fade-in duration-300">
                                 <button
+                                    aria-label={isPlaying ? "Pause Simulation" : "Play Evolution"}
                                     onClick={handlePlayToggle}
                                     className={`group relative p-2 rounded-full transition-colors ${isPlaying ? 'text-red-400 bg-red-500/10' : 'text-blue-400 hover:bg-white/10'}`}
                                 >
@@ -3100,6 +3274,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                     </span>
                                 </button>
                                 <button
+                                    aria-label="Restart Simulation"
                                     onClick={handleRestart}
                                     className="group relative p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-full transition-colors"
                                 >
@@ -3109,6 +3284,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                     </span>
                                 </button>
                                 <button
+                                    aria-label="Toggle Thermal Mode"
                                     onClick={() => setShowGas(!showGas)}
                                     className={`group relative p-2 rounded-full transition-colors ${showGas ? 'text-cyan-400 bg-cyan-500/10' : 'text-slate-400 hover:bg-white/10'}`}
                                 >
@@ -3118,6 +3294,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                     </span>
                                 </button>
                                 <button
+                                    aria-label="Toggle Voronoi Grid"
                                     onClick={() => setShowVoronoi(!showVoronoi)}
                                     className={`group relative p-2 rounded-full transition-colors ${showVoronoi ? 'text-cyan-400 bg-cyan-500/10' : 'text-slate-400 hover:bg-white/10'}`}
                                 >
@@ -3127,6 +3304,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                     </span>
                                 </button>
                                 <button
+                                    aria-label="Toggle Void Identification"
                                     onClick={() => setShowVoids(!showVoids)}
                                     className={`group relative p-2 rounded-full transition-colors ${showVoids ? 'text-rose-400 bg-rose-500/10' : 'text-slate-400 hover:bg-white/10'}`}
                                 >
@@ -3137,6 +3315,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                 </button>
                                 {showVoids && (
                                 <button
+                                    aria-label="Toggle Void Profiles"
                                     onClick={handleShowVoidProfile}
                                     className={`group relative p-2 rounded-full transition-colors ${showVoidProfile ? 'text-emerald-400 bg-emerald-500/10' : 'text-slate-400 hover:bg-white/10'}`}
                                 >
@@ -3154,8 +3333,8 @@ https://github.com/nicosmo/cosmic_web_explorer
                     {tutorialStep > 0 && tutorialSteps[tutorialStep - 1].target.current && (
                         <div className="absolute z-[100] bg-slate-800 border border-blue-500 rounded-lg p-4 shadow-2xl max-w-xs transition-all animate-in fade-in"
                              style={{
-                                 top: Math.max(20, tutorialSteps[tutorialStep - 1].target.current.getBoundingClientRect().top),
-                                 left: tutorialSteps[tutorialStep - 1].target.current.getBoundingClientRect().right + 20
+                                 top: Math.max(20, Math.min(tutorialSteps[tutorialStep - 1].target.current.getBoundingClientRect().top, window.innerHeight - 340)),
+                                 left: Math.min(tutorialSteps[tutorialStep - 1].target.current.getBoundingClientRect().right + 20, window.innerWidth - 380)
                              }}>
                             <h3 className="text-blue-400 font-bold mb-1">{tutorialSteps[tutorialStep - 1].title}</h3>
                             <p className="text-sm text-slate-300 mb-3">{tutorialSteps[tutorialStep - 1].content}</p>
