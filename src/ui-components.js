@@ -15,10 +15,10 @@
 
 /**
  * TooltipWrapper — portal-based tooltip that floats beside the trigger element.
- * Props: { text, children, className }
+ * Props: { text, children, className, align }
  */
 const TooltipWrapper = (props) => {
-    const { text, children, className } = props;
+    const { text, children, className, align } = props;
     const [show, setShow] = React.useState(false);
     const [pos, setPos] = React.useState({ top: 0, left: 0 });
     const triggerRef = React.useRef(null);
@@ -41,9 +41,16 @@ const TooltipWrapper = (props) => {
         show && ReactDOM.createPortal(
             React.createElement('div', {
                 className: 'portal-tooltip',
-                style: { top: pos.top, left: pos.left, transform: 'translateY(-50%)' }
+                style: {
+                    top: pos.top,
+                    left: pos.left,
+                    transform: align === 'bottom' ? 'translateY(-92%)' : 'translateY(-50%)'
+                }
             },
-                React.createElement('div', { className: 'portal-tooltip-arrow' }),
+                React.createElement('div', {
+                    className: 'portal-tooltip-arrow',
+                    style: align === 'bottom' ? { top: '92%' } : {}
+                }),
                 text
             ),
             document.body
