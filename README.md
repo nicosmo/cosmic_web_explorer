@@ -1,3 +1,10 @@
+🇬🇧 [English](README.md) | 🇩🇪 [Deutsch](docs/README-de.md)
+
+# Cosmic Web Explorer
+
+
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.18915566-blue.svg)](https://doi.org/10.5281/zenodo.18915566) and [![arXiv](https://img.shields.io/badge/arXiv-2603.18145-b31b1b.svg)](https://arxiv.org/abs/2603.18145)
+
 # Cosmic Web Explorer
 
 
@@ -30,7 +37,6 @@ The evolution is computed by combining analytical Second-Order Lagrangian Pertur
 
 ---
 
-## Gallery
 
 ## Gallery
 
@@ -136,6 +142,7 @@ To avoid browser cross-origin security restrictions (CORS) when loading Web Work
 cosmic_web_explorer/
 ├── index.html              # Main HTML containing the React UI
 ├── styles.css              # Application styling
+├── docs/                   # Translations
 ├── Examples/               # Demo videos and gallery images
 ├── src/
 │   ├── constants.js          # Cosmological parameters (Planck 2018)
@@ -232,7 +239,7 @@ To achieve interactive framerates and stable structures in 2D, we use a hybrid a
 In high-density regions, purely LPT-driven trajectories cross and blow up (shell-crossing). Rather than implementing a computationally expensive Burgers-equation viscosity model, we use a phenomenological adhesion model. We track a "shell-crossing accumulator" $N_{cross}$ for each particle, which increments when nearby particles have anti-parallel displacement directions:
 
 $$
-\mathbf{\Psi}_{1,i} \cdot \mathbf{\Psi}_{1,j} < 0 , 
+\mathbf{\Psi}_{1,i} \cdot \mathbf{\Psi}_{1,j} < 0 ,
 $$
 
 indicating converging flows. The effective linear growth factor for that particle is locally damped:
@@ -291,7 +298,7 @@ Real-time void identification is offloaded to a background Web Worker. The engin
 To represent the sub-grid velocity dispersion (virialization) of dark matter halos without the computational cost of true high-resolution N-body orbits, the engine applies a physically-modulated cosmetic offset at render time. The scatter amplitude is driven by five factors:
 
 * **Density-Dependent Amplitude:** The amplitude approaches a baseline in voids and is suppressed in dense structures:
-  
+
 $$
 \sigma \propto \frac{1}{1 + \alpha (\rho / \bar{\rho})}
 $$
@@ -360,7 +367,7 @@ The GitHub Pages site for this project uses [GoatCounter](https://www.goatcounte
 
 ## License & Open Science
 
-This project is licensed under the **GNU Affero General Public License v3.0 (AGPLv3)**. 
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPLv3)**.
 
 We chose this license not to be restrictive, but to ensure that the **Cosmic Web Explorer** remains a permanent, free resource for the astronomy community. By using the AGPLv3, we guarantee that:
 * **Open Access:** The code will always stay open-source.
