@@ -37,18 +37,18 @@ Die Entwicklung wird durch die Kombination der analytischen Lagrange-Störungsth
 
 |  BAO-Modellierungsmodus | Thermische Gasansicht |
 | :---: | :---: |
-| <a href="Examples/BAO_example.png"><img src="Examples/BAO_example.png" width="350"></a> | <a href="Examples/Thermal_example.png"><img src="Examples/Thermal_example.png" width="350"></a> |
+| <a href="../Examples/BAO_example.png"><img src="../Examples/BAO_example.png" width="350"></a> | <a href="../Examples/Thermal_example.png"><img src="../Examples/Thermal_example.png" width="350"></a> |
 | *Evolution von BAO Anfangsbedingungen (ICs).* | *Imitiert lokale Temperatur.* |
 
 
 | Realistische LSS | Void Identifizierung |
 | :---: | :---: |
-| <a href="Examples/LSS_example.png"><img src="Examples/LSS_example.png" width="350"></a> | <a href="Examples/Voids_example.png"><img src="Examples/Voids_example.png" width="350"></a> |
+| <a href="../Examples/LSS_example.png"><img src="../Examples/LSS_example.png" width="350"></a> | <a href="../Examples/Voids_example.png"><img src="../Examples/Voids_example.png" width="350"></a> |
 | *Evolution von Eisenstein & Hu P(k) ICs.* | *Echtzeit Void Identifizierung.* |
 
 | Teilchenbewegung Movement | Split-Screen Vergleich |
 | :---: | :---: |
-| <a href="Examples/Trails_example.png"><img src="Examples/Trails_example.png" width="350"></a> | <a href="Examples/Comparison_example.png"><img src="Examples/Comparison_example.png" width="350"></a> |
+| <a href="../Examples/Trails_example.png"><img src="../Examples/Trails_example.png" width="350"></a> | <a href="../Examples/Comparison_example.png"><img src="../Examples/Comparison_example.png" width="350"></a> |
 | *Die bisherigen Bewegungen der Teilchen darstellen.* | *Kosmologie-Vergleich auf zwei Panels.* |
 
 
