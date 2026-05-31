@@ -268,10 +268,58 @@ function drawRuler(ctx, start, current, pxPerMpc) {
 }
 
 /**
+ * Wrap text into multiple lines constrained by maxWidth.
+ */
+function wrapCanvasText(ctx, text, maxWidth) {
+    const value = String(text || '');
+    if (!value) return [''];
+
+    const lines = [];
+    let currentLine = '';
+
+    const pushChunkedWord = (word) => {
+        let chunk = '';
+        for (const ch of word) {
+            const testChunk = chunk + ch;
+            if (ctx.measureText(testChunk).width <= maxWidth || chunk.length === 0) {
+                chunk = testChunk;
+            } else {
+                lines.push(chunk);
+                chunk = ch;
+            }
+        }
+        if (chunk) lines.push(chunk);
+    };
+
+    for (const word of value.split(' ')) {
+        const testLine = currentLine ? `${currentLine} ${word}` : word;
+        if (ctx.measureText(testLine).width <= maxWidth) {
+            currentLine = testLine;
+            continue;
+        }
+
+        if (currentLine) {
+            lines.push(currentLine);
+            currentLine = '';
+        }
+
+        if (ctx.measureText(word).width <= maxWidth) {
+            currentLine = word;
+        } else {
+            pushChunkedWord(word);
+        }
+    }
+
+    if (currentLine) lines.push(currentLine);
+    return lines.length ? lines : [''];
+}
+
+/**
  * Draw void statistics legend box.
  */
-function drawVoidStats(ctx, voidResults, voidThreshold, minVoidRadius, pxPerMpc, SIM_W, SIM_H) {
+function drawVoidStats(ctx, voidResults, voidThreshold, minVoidRadius, pxPerMpc, SIM_W, SIM_H, dict) {
     if (!voidResults || voidResults.numVoids <= 0) return;
+    const d = dict || {};
 
     let totalRPx = 0;
     let count = 0;
@@ -285,38 +333,63 @@ function drawVoidStats(ctx, voidResults, voidThreshold, minVoidRadius, pxPerMpc,
     const meanRMpc = meanRPx / pxPerMpc;
 
     const legendY = Math.max(150, SIM_H * 0.3);
-    const boxH = 100, boxW = 240;
+    const boxW = 240;
+    const minBoxH = 100;
     const boxX = SIM_W - boxW - 20;
+
+    const titleText = `${d.voidsFound} ${count}`;
+    const lineTexts = [
+        `${d.colorCutoff}: ${voidThreshold.toFixed(2)}${d.timesMeanDensity}`,
+        `${d.minRadius}: ${minVoidRadius} ${d.mpcUnit}`,
+        `${d.meanRadius}: ${meanRMpc.toFixed(1)} ${d.mpcUnit}`
+    ];
+    const textX = boxX + 12;
+    const maxTextWidth = boxW - 24;
+
+    ctx.font = 'bold 19px Inter';
+    const titleLines = wrapCanvasText(ctx, titleText, maxTextWidth);
+    ctx.font = '17px Inter';
+    const wrappedLines = lineTexts.map(text => wrapCanvasText(ctx, text, maxTextWidth));
+
+    const titleLineStep = 25;
+    const bodyLineStep = 22;
+    const contentTopPadding = 24;
+    const contentBottomPadding = 12;
+    const contentHeight =
+        (titleLines.length * titleLineStep) +
+        (wrappedLines.reduce((sum, lines) => sum + (lines.length * bodyLineStep), 0));
+    const boxH = Math.max(minBoxH, contentTopPadding + contentHeight + contentBottomPadding - 22);
 
     ctx.fillStyle = 'rgba(15, 23, 42, 0.96)';
     ctx.fillRect(boxX, legendY, boxW, boxH);
     ctx.strokeStyle = 'rgba(255,255,255,0.2)';
     ctx.strokeRect(boxX, legendY, boxW, boxH);
 
-    const textX = boxX + 12;
     let currentY = legendY + 24;
 
     ctx.fillStyle = '#fbbf24';
     ctx.font = 'bold 19px Inter';
     ctx.textAlign = 'left';
-    ctx.fillText(`Voids Found: ${count}`, textX, currentY);
+    for (const line of titleLines) {
+        ctx.fillText(line, textX, currentY);
+        currentY += titleLineStep;
+    }
 
-    currentY += 25;
     ctx.fillStyle = '#94a3b8';
     ctx.font = '17px Inter';
-    ctx.fillText(`Color cutoff: ${voidThreshold.toFixed(2)}\u00d7 mean`, textX, currentY);
-
-    currentY += 22;
-    ctx.fillText(`Min. Radius: ${minVoidRadius} Mpc`, textX, currentY);
-
-    currentY += 22;
-    ctx.fillText(`Mean Radius: ${meanRMpc.toFixed(1)} Mpc`, textX, currentY);
+    for (const lines of wrappedLines) {
+        for (const line of lines) {
+            ctx.fillText(line, textX, currentY);
+            currentY += bodyLineStep;
+        }
+    }
 }
 
 /**
  * Draw comoving scale bar.
  */
-function drawScaleBar(ctx, pxPerMpc, SIM_H, isSidebarCollapsed, isB) {
+function drawScaleBar(ctx, pxPerMpc, SIM_H, isSidebarCollapsed, isB, dict) {
+    const d = dict || {};
     const possibleSteps = [50, 100, 150, 200, 250, 300, 400, 500, 600, 800, 1000];
     let scaleBarMpc = possibleSteps[0];
     let minDiff = Math.abs((280 / pxPerMpc) - possibleSteps[0]);
@@ -333,10 +406,10 @@ function drawScaleBar(ctx, pxPerMpc, SIM_H, isSidebarCollapsed, isB) {
     ctx.fillRect(scaleX + scaleBarPx, scaleY - 8, 2, 20);
     ctx.font = '22px "Inter", sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`${scaleBarMpc} Mpc`, scaleX + (scaleBarPx / 2), scaleY - 16);
+    ctx.fillText(`${scaleBarMpc} ${d.mpcUnit}`, scaleX + (scaleBarPx / 2), scaleY - 16);
     ctx.font = '14px "Inter", sans-serif';
     ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-    ctx.fillText('(Comoving Coordinates)', scaleX + (scaleBarPx / 2), scaleY + 18);
+    ctx.fillText(d.comovingCoords, scaleX + (scaleBarPx / 2), scaleY + 18);
 }
 
 /**
@@ -344,13 +417,14 @@ function drawScaleBar(ctx, pxPerMpc, SIM_H, isSidebarCollapsed, isB) {
  */
 function drawPanelInfoBox(ctx, opts) {
     const { currentZ, pOm, pOl, pW0, pWa, pCosmoMode, pBaoRadiusMpc,
-            isB, cWidth, cHeight } = opts;
+            isB, cWidth, cHeight, dict } = opts;
+    const d = dict || {};
 
     const panelAgeGyr = calculateAgeGyr(currentZ, pOm, pOl, pW0, pWa);
 
     ctx.save();
     const panelColor = isB ? 'rgba(251,191,36,0.95)' : 'rgba(96,165,250,0.95)';
-    const panelLabel = isB ? 'Panel B' : 'Panel A';
+    const panelLabel = isB ? d.panelB : d.panelA;
     const fontSize = 16;
     const subFontSize = Math.round(fontSize * 0.68);
     const lineH = fontSize + 6;
@@ -367,7 +441,6 @@ function drawPanelInfoBox(ctx, opts) {
     };
 
     const hasWLine = (pCosmoMode === 'wCDM' || pCosmoMode === 'w0wa');
-    const numLines = (hasWLine ? 4 : 3) + 1;
 
     ctx.font = `bold ${fontSize}px Inter`;
     const omLineEst = ctx.measureText('\u03A9m = 0.30   \u03A9\u039B = 0.70').width + 12;
@@ -375,7 +448,7 @@ function drawPanelInfoBox(ctx, opts) {
     ctx.font = `${fontSize}px Inter`;
     const timeText = `z = ${currentZ.toFixed(2)}     ${panelAgeGyr.toFixed(2)} Gyr`;
     const timeW = ctx.measureText(timeText).width;
-    const baoText = `BAO scale: ${Math.round(pBaoRadiusMpc)} Mpc`;
+    const baoText = `${d.baoScale} ${Math.round(pBaoRadiusMpc)} ${d.mpcUnit}`;
     const baoW = ctx.measureText(baoText).width;
     let wLineText = '';
     let wLineW = 0;
@@ -389,8 +462,22 @@ function drawPanelInfoBox(ctx, opts) {
     }
 
     const boxPad = 14;
-    const boxW = Math.max(labelEst, omLineEst, timeW, wLineW, baoW) + boxPad * 2;
-    const boxH = numLines * lineH + boxPad * 2 - 4;
+    const baseContentW = Math.max(labelEst, omLineEst, timeW, wLineW);
+    const boxW = baseContentW + boxPad * 2;
+    const maxTextWidth = boxW - boxPad * 2;
+
+    ctx.font = `bold ${fontSize + 2}px Inter`;
+    const panelLabelLines = wrapCanvasText(ctx, panelLabel, maxTextWidth);
+    ctx.font = `${fontSize}px Inter`;
+    const wLineLines = hasWLine ? wrapCanvasText(ctx, wLineText, maxTextWidth) : [];
+    const timeLines = wrapCanvasText(ctx, timeText, maxTextWidth);
+    ctx.font = `${fontSize - 1}px Inter`;
+    const baoLines = wrapCanvasText(ctx, baoText, maxTextWidth);
+
+    const minNumLines = (hasWLine ? 5 : 4);
+    const minBoxH = minNumLines * lineH + boxPad * 2 - 4;
+    const totalLineSteps = panelLabelLines.length + 1 + wLineLines.length + timeLines.length + baoLines.length;
+    const boxH = Math.max(minBoxH, totalLineSteps * lineH + boxPad * 2 - 4);
 
     const boxX = isB ? 4 : (cWidth - boxW - 4);
     const boxY = Math.round((cHeight - boxH) / 2);
@@ -415,8 +502,10 @@ function drawPanelInfoBox(ctx, opts) {
 
     ctx.font = `bold ${fontSize + 2}px Inter`;
     ctx.fillStyle = panelColor;
-    ctx.fillText(panelLabel, textX, ly);
-    ly += lineH;
+    for (const line of panelLabelLines) {
+        ctx.fillText(line, textX, ly);
+        ly += lineH;
+    }
 
     ctx.fillStyle = 'rgba(255,255,255,0.92)';
     let ox = textX;
@@ -433,18 +522,25 @@ function drawPanelInfoBox(ctx, opts) {
     if (hasWLine) {
         ctx.font = `${fontSize}px Inter`;
         ctx.fillStyle = 'rgba(255,255,255,0.82)';
-        ctx.fillText(wLineText, textX, ly);
-        ly += lineH;
+        for (const line of wLineLines) {
+            ctx.fillText(line, textX, ly);
+            ly += lineH;
+        }
     }
 
     ctx.font = `${fontSize}px Inter`;
     ctx.fillStyle = 'rgba(255,255,255,0.82)';
-    ctx.fillText(timeText, textX, ly);
-    ly += lineH;
+    for (const line of timeLines) {
+        ctx.fillText(line, textX, ly);
+        ly += lineH;
+    }
 
     ctx.font = `${fontSize - 1}px Inter`;
     ctx.fillStyle = 'rgba(251,191,36,0.7)';
-    ctx.fillText(baoText, textX, ly);
+    for (const line of baoLines) {
+        ctx.fillText(line, textX, ly);
+        ly += lineH;
+    }
 
     ctx.restore();
 }
@@ -809,7 +905,8 @@ function drawStatsChart(ctx, opts) {
     const { showCorrelation, showVoidProfile, showDensityPDF, physX, physY, tracersPerPanel,
             centers, pBaoRadiusPx, pBaoRadiusMpc, pxPerMpc, SIM_W, SIM_H,
             voronoiData, voidCenterMode, profileMode, gpuCorrHistogram, gpuCorrNCenters,
-            initMode, panelBoxMpc, panelId, smoothedDensities, meanDensity } = opts;
+            initMode, panelBoxMpc, panelId, smoothedDensities, meanDensity, dict } = opts;
+    const d = dict || {};
 
     if (!showCorrelation && !showVoidProfile && !showDensityPDF) return;
     if (showVoidProfile && !voronoiData) return;
@@ -916,7 +1013,7 @@ function drawStatsChart(ctx, opts) {
             ctx.fillStyle = '#e2e8f0';
             ctx.font = 'bold 13px Inter';
             ctx.textAlign = 'center';
-            ctx.fillText('ρ̅', zeroX, areaY - 4);
+            ctx.fillText(d.meanDensitySymbol || 'ρ̅', zeroX, areaY - 4);
         }
 
         // X-axis tick marks and labels
@@ -931,7 +1028,7 @@ function drawStatsChart(ctx, opts) {
         ctx.moveTo(areaX, areaY + areaH);
         ctx.lineTo(areaX, areaY + areaH + 4);
         ctx.stroke();
-        ctx.fillText('-1', areaX, areaY + areaH + 14);
+        ctx.fillText(d.minusOneTick || '-1', areaX, areaY + areaH + 14);
 
         // Determine tick step based on range
         const xRange = xMax - xMin;
@@ -962,13 +1059,13 @@ function drawStatsChart(ctx, opts) {
         ctx.fillStyle = '#94a3b8';
         ctx.font = 'bold 14px Inter';
         ctx.textAlign = 'center';
-        ctx.fillText('ρ / ρ̅ − 1', areaX + areaW / 2, areaY + areaH + 28);
+        ctx.fillText(d.densityContrastLabel, areaX + areaW / 2, areaY + areaH + 28);
 
         // Title
         ctx.fillStyle = '#94a3b8';
         ctx.font = 'bold 14px Inter';
         ctx.textAlign = 'right';
-        ctx.fillText('Normalized Density Distribution', plotX + plotW - 5, plotY + 18);
+        ctx.fillText(d.normDensityDist, plotX + plotW - 5, plotY + 18);
 
         return;
     }
@@ -1031,7 +1128,7 @@ function drawStatsChart(ctx, opts) {
         // --- P(k) mode: Measured Power Spectrum via FFT ---
         pkData = computePowerSpectrum(physX, physY, tracersPerPanel, SIM_W, SIM_H, pxPerMpc, panelId);
         isPkChart = true;
-        title = "Power Spectrum P(k)";
+        title = d.powerSpectrum;
     } else if (showCorrelation) {
         // --- BAO mode: Pair-counting ξ(r) ---
         // Full range [0, 1.5]×R_bao with search to 1.7×R_bao
@@ -1109,8 +1206,8 @@ function drawStatsChart(ctx, opts) {
 
         plotYMin = 0;
         plotYMax = maxVal;
-        title = "2-Pt Correlation Function";
-        xLabel = "Distance (Mpc)";
+        title = d.twoPtCorrChart;
+        xLabel = d.distanceMpc;
         xMaxLabel = Math.round(plotMaxDist / pxPerMpc);
         showBAOLine = true;
     } else if (showVoidProfile && voronoiData && voronoiData.voidResults) {
@@ -1209,13 +1306,13 @@ function drawStatsChart(ctx, opts) {
                 counts[b] = col.length > 0 ? col[mid] : 0;
                 if (counts[b] > maxVal) maxVal = counts[b];
             }
-            title = "Median Void Density Profile";
+            title = d.medianVoidProfile;
         } else {
             for (let b = 0; b < numBins; b++) {
                 counts[b] = stackedExpected[b] > 0 ? stackedCounts[b] / stackedExpected[b] : 0;
                 if (counts[b] > maxVal) maxVal = counts[b];
             }
-            title = "Stacked Void Density Profile";
+            title = d.stackedVoidProfile;
         }
 
         plotYMax = maxVal * 1.15;
@@ -1364,13 +1461,13 @@ function drawStatsChart(ctx, opts) {
         ctx.fillStyle = '#64748b';
         ctx.font = '12px Inter';
         ctx.textAlign = 'center';
-        ctx.fillText('k  (h/Mpc)', areaX + areaW / 2, areaY + areaH + 28);
+        ctx.fillText(d.kAxisLabel, areaX + areaW / 2, areaY + areaH + 28);
 
         ctx.save();
         ctx.translate(plotX + 14, areaY + areaH / 2);
         ctx.rotate(-Math.PI / 2);
         ctx.textAlign = 'center';
-        ctx.fillText('P(k)  (Mpc/h)\u00B2', 0, 0);
+        ctx.fillText(d.pkAxisLabel, 0, 0);
         ctx.restore();
 
         return; // P(k) chart is done
@@ -1412,7 +1509,7 @@ function drawStatsChart(ctx, opts) {
         ctx.fillStyle = '#94a3b8';
         ctx.font = '11px Inter';
         ctx.textAlign = 'left';
-        ctx.fillText("1.0", plotX + 4, y1 + 4);
+        ctx.fillText(d.meanLineValue, plotX + 4, y1 + 4);
     }
 
     // R_eff reference line
@@ -1438,7 +1535,7 @@ function drawStatsChart(ctx, opts) {
     if (showVoidProfile) {
         ctx.font = '11px Inter';
         ctx.fillStyle = '#64748b';
-        const centerLabel = voidCenterMode === 'geometric' ? 'Macrocenter' : 'Min. Density Center';
+        const centerLabel = voidCenterMode === 'geometric' ? d.macrocenter : d.minDensityCenter;
         ctx.fillText(centerLabel, plotX + plotW - 5, plotY + 33);
     }
 
@@ -1462,7 +1559,7 @@ function drawStatsChart(ctx, opts) {
                 ctx.stroke();
                 ctx.fillText(v.toFixed(1), plotX + 6, y + 3);
             } else {
-                ctx.fillText("0.0", plotX + 6, axisY - 2);
+                ctx.fillText(d.zeroTick || '0.0', plotX + 6, axisY - 2);
             }
         }
     } else if (showCorrelation) {
