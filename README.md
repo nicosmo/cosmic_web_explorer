@@ -28,6 +28,7 @@ The evolution is computed by combining analytical Second-Order Lagrangian Pertur
 > - *Interactions & Forces:* While background expansion $H(z)$, growth factor $D_1(z)$, and transfer functions are rigorously derived from 3D physics, particle interactions occur on a 2D plane. Consequently, the use of a 2D $1/r$ gravitational force sacrifices the realistic formation of dense 3D halos in favor of an accelerated, highly visual network of cosmic filaments.
 > - *Resolution Limits:* Low tracer counts (20k - 200k) can cause structural artifacts. Furthermore, local gravitational forces are artificially truncated to maintain interactive framerates.
 > - *Phenomenological Models:* True gas hydrodynamics are absent. Collisionless dynamics are approximated via an "Adhesion" model to prevent clusters from visually exploding, and a phenomenological model is implemented to prevent tracers from collapsing into single point masses.
+> - *Redshift Space:* Provided for visual intuition and not completely accurate. The line-of-sight velocity field is modeled approximately to highlight distortion patterns, so the displayed RSD amplitude should be interpreted qualitatively, not as an exact observational prediction.
 
 ---
 
@@ -79,6 +80,7 @@ Contributions, feature suggestions, and bug reports are highly welcome!
 * **Cosmology Controls:** Adjust cosmological parameters to immediately observe their impact on structure growth. Supports standard flat/non-flat $\Lambda\text{CDM}$, $w\text{CDM}$, and dynamic dark energy ($w_0w_a\text{CDM}$ via the CPL parameterization).
 * **Time Control:** Move backwards and forwards through cosmic history using the timeline slider (instantly computes 2LPT displacements, no local gravity), or hit "Play" for a more accurate evolution.
 * **Split-Screen Comparison:** Run two independent simulations side-by-side. Set different cosmological parameters for Panel A and Panel B while sharing the exact same random seed. Panel B syncs to Panel A's redshift ($z$) for direct visual comparisons of structure formation at the exact same stage of cosmic expansion.
+* **Redshift Space:** Switch between real space and redshift space to displace tracers along a selectable line of sight due to a doppler shift from their own motion, using modeled peculiar velocities. The strength of redshift space distortions (RSD) is adjustable for direct visual comparison of anisotropic clustering.
 
 ### Visualization Modes
 * **Tracers & Trails:** View the standard mass tracer distribution, and toggle **History** (past trajectories) or **Vector** (exaggerated current velocity) modes to visualize bulk flows.
@@ -136,14 +138,23 @@ To avoid browser cross-origin security restrictions (CORS) when loading Web Work
 cosmic_web_explorer/
 ├── index.html              # Main HTML containing the React UI
 ├── styles.css              # Application styling
+├── .github/
+│   └── workflows/
+│       └── smoke.yml         # CI startup smoke test
 ├── docs/                   # Translations
 ├── Examples/               # Demo videos and gallery images
+├── tests/
+│   └── smoke.spec.js         # Playwright startup/mount smoke coverage
 ├── src/
 │   ├── constants.js          # Cosmological parameters (Planck 2018)
 │   ├── cosmology.js          # Expansion history & growth factor LUTs
 │   ├── transfer-function.js  # Eisenstein & Hu P(k) transfer functions
 │   ├── pert2lpt.js           # 2LPT displacement via 2D FFT
 │   ├── sim-physics.js        # Core Leapfrog KDK integration & Adhesion model
+│   ├── redshift-space.js     # Redshift-space LOS shifting & hybrid velocity logic
+│   ├── analysis-keys.js      # Shared cache key/signature helpers for analysis spaces
+│   ├── panel-render-loop.js  # Extracted per-panel physics and RSD update pipeline
+│   ├── startup-guard.js      # Startup preflight checks and global fatal-error fallback
 │   ├── bao-forces.js         # Sculpted BAO initialization logic
 │   ├── gpu-gravity.js        # WebGPU N-body compute shader
 │   ├── gpu-correlation.js    # WebGPU pair-counting compute shader
@@ -262,6 +273,32 @@ $$
 
 where $C_{\mathrm{drag}} = 0.25$ is empirically calibrated above the pure physical value to account for unresolved sub-grid velocity dispersion damping.
 
+To emulate observational redshift-space distortions (RSD), we apply a line-of-sight (LOS) displacement using a phenomenological hybrid velocity field. The local density controls how strongly each tracer uses perturbative (large-scale) versus local (nonlinear) velocity information:
+
+$$
+\mathbf{v}_{\mathrm{hyb}}=(1-w_\rho)\,\mathbf{v}_{\mathrm{PT}}+w_\rho\,\mathbf{v}_{\mathrm{local}}.
+$$
+
+$$
+w_\rho = w_{\min} + (w_{\max}-w_{\min})\,s\!\left(\rho/\bar{\rho}\right),
+\qquad
+w_{\min}=0.15,\; w_{\max}=0.85,
+$$
+
+with $s$ chosen as a smooth density-dependent ramp from PT weighting at low density ($\rho/\bar{\rho}\le 0.5$) to local-velocity weighting at high density ($\rho/\bar{\rho}\ge 5.0$).
+
+The redshift-space mapping is then:
+
+$$
+\mathbf{x}_{\mathrm{RSD}}=\mathbf{x}_{\mathrm{real}}+
+A_{\mathrm{RSD}}\,
+\frac{h\,(\mathrm{pxPerMpc})\,v_{\parallel,\mathrm{hyb}}}{a\,E(z)}\,\hat{\mathbf{n}},
+$$
+
+with $A_{\mathrm{RSD}}$ the user-controlled amplitude, $\hat{\mathbf{n}}$ the LOS unit vector, and $E(z)=H(z)/H_0$.
+
+When the manual time slider is moved while paused, local velocities are briefly re-estimated at fixed positions to keep the RSD view continuous.
+
 
 ### 4. Implementation: CPU vs. WebGPU
 
@@ -334,7 +371,7 @@ $$
 * **Code Generation:** Google Gemini Pro 3.0/3.1 and Claude Opus 4.5/4.6
 * **Core Libraries:** The void-finding visualization heavily relies on the excellent [d3-delaunay](https://github.com/d3/d3-delaunay) library for computational geometry.
 
-The authors of this code thank Julien Zoubian and Dennis Frei for their valuable contributions to the development of the code, as well as Julian Bautista, Marie-Claude Cousinou, Steffen Hagstotz, Nico Hamaus, Geray Karademir, Arnaud de Mattia, Alice Pisani, and Pauline Zarrouk for useful discussions and feedback. NS is supported by the French government’s France 2030 investment plan (A*MIDEX AMX-22-CEI-03).
+The authors of this code thank Julien Zoubian and Dennis Frei for their valuable contributions to the development of the code, as well as Julian Bautista, Marie-Claude Cousinou, Steffen Hagstotz, Nico Hamaus, Geray Karademir, Arnaud de Mattia, Alice Pisani, Benjamin Racine, and Pauline Zarrouk for useful discussions and feedback. NS is supported by the French government’s France 2030 investment plan (A*MIDEX AMX-22-CEI-03).
 
 ## Citation
 

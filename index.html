@@ -22,11 +22,11 @@ https://github.com/nicosmo/cosmic_web_explorer
     <link rel="apple-touch-icon" sizes="180x180" href="favicons/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="192x192" href="favicons/android-chrome-192x192.png">
     <link rel="icon" type="image/png" sizes="512x512" href="favicons/android-chrome-512x512.png">
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/d3-delaunay@6"></script>
+    <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone@7.24.9/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+    <script src="https://unpkg.com/d3-delaunay@6.0.4"></script>
     <script src="src/constants.js"></script>
     <script src="src/cosmology.js"></script>
     <script src="src/webgl-utils.js"></script>
@@ -37,6 +37,9 @@ https://github.com/nicosmo/cosmic_web_explorer
     <script src="src/pert2lpt.js"></script>
     <script src="src/transfer-function.js"></script>
     <script src="src/sim-physics.js"></script>
+    <script src="src/redshift-space.js"></script>
+    <script src="src/analysis-keys.js"></script>
+    <script src="src/panel-render-loop.js"></script>
     <script src="src/sim-renderer.js"></script>
     <script src="src/icons.js"></script>
     <script src="src/ui-components.js"></script>
@@ -47,9 +50,11 @@ https://github.com/nicosmo/cosmic_web_explorer
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div id="root"></div>
+    <div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0f172a;font-family:sans-serif;"><div style="text-align:center;color:#94a3b8;"><div style="font-size:1.4rem;font-weight:600;color:#f1f5f9;margin-bottom:0.5rem;">Cosmic Web Explorer</div><div style="color:#60a5fa;font-size:0.95rem;letter-spacing:0.05em;">Loading&#8230;</div></div></div></div>
 
-    <script type="text/babel">
+    <script src="src/startup-guard.js"></script>
+
+    <script type="text/babel" data-presets="env,react" data-plugins="transform-react-jsx">
         const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
         const workerCode = `
@@ -529,6 +534,10 @@ https://github.com/nicosmo/cosmic_web_explorer
             const [useAdhesion, setUseAdhesion] = useState(true);
             const [isPlaying, setIsPlaying] = useState(false);
             const [seed, setSeed] = useState(42);
+            const [spaceMode, setSpaceMode] = useState('real'); // 'real' | 'redshift'
+            const [rsdLos, setRsdLos] = useState('vertical'); // 'vertical' | 'horizontal'
+            const [rsdAmplitude, setRsdAmplitude] = useState(1.0);
+            const [rsdAmplitudeSettled, setRsdAmplitudeSettled] = useState(1.0);
             const [enableCustomText, setEnableCustomText] = useState(false);
             const [customText, setCustomText] = useState('');
             const SIDEBAR_W = 64; // collapsed sidebar width (w-16)
@@ -606,11 +615,19 @@ https://github.com/nicosmo/cosmic_web_explorer
             const pendingRecRef = useRef(null);       // deferred recording start after canvas resize
 
             const simulationTimeRef = useRef(cosmologyLUT.minTime);
-            const rulerRef = useRef({ start: null, current: null, isSculpting: false, mouse: null });
+            const rulerRef = useRef({ start: null, current: null, isSculpting: false, mouse: null, sculptPanel: 0 });
+            const hasPlaybackLocalVelRef = useRef(false);
+            const hasPlaybackLocalVelRefB = useRef(false);
 
             const workerRef = useRef(null);
             const isWorkerBusy = useRef(false);
             const voronoiDataRef = useRef(null);
+            const analysisSpaceKeyRef = useRef(buildAnalysisSpaceKey(spaceMode, rsdLos, rsdAmplitudeSettled));
+
+            useEffect(() => {
+                const timer = setTimeout(() => setRsdAmplitudeSettled(rsdAmplitude), 180);
+                return () => clearTimeout(timer);
+            }, [rsdAmplitude]);
 
             const uiCanvasRef = useRef(null);
             const webglCanvasRef = useRef(null);
@@ -787,7 +804,21 @@ https://github.com/nicosmo/cosmic_web_explorer
                 voronoiDataRef.current = null;
             }, [minVoidRadius, showVoids]);
 
-            const lastCalcParamsRef = useRef({ minVoidRadius: 10, voidThreshold: 1.0 });
+            useEffect(() => {
+                const nextKey = buildAnalysisSpaceKey(spaceMode, rsdLos, rsdAmplitudeSettled);
+                if (analysisSpaceKeyRef.current === nextKey) return;
+                analysisSpaceKeyRef.current = nextKey;
+                voronoiDataRef.current = null;
+                voronoiDataRefB.current = null;
+                lastCalcParamsRef.current.analysisKey = '';
+                lastCalcParamsRefB.current.analysisKey = '';
+                rsdColorDataRef.current.analysisKey = '';
+                rsdColorDataRefB.current.analysisKey = '';
+                rsdPausedLocalRef.current.analysisKey = '';
+                rsdPausedLocalRefB.current.analysisKey = '';
+            }, [spaceMode, rsdLos, rsdAmplitudeSettled]);
+
+            const lastCalcParamsRef = useRef({ minVoidRadius: 10, voidThreshold: 1.0, analysisKey: '' });
 
             useEffect(() => {
                 if (simulationTimeRef.current < cosmologyLUT.minTime) {
@@ -799,6 +830,11 @@ https://github.com/nicosmo/cosmic_web_explorer
             const headRef = useRef(new Int32Array(0));
             const nextRef = useRef(new Int32Array(0));
             const posRef = useRef({ x: new Float32Array(0), y: new Float32Array(0), size: 0 });
+            const rsdPosRef = useRef({ x: new Float32Array(0), y: new Float32Array(0), size: 0 });
+            const rsdAnalysisPosRef = useRef({ x: new Float32Array(0), y: new Float32Array(0), size: 0 });
+            const hybridVelocityRef = useRef({ values: new Float32Array(0), size: 0 });
+            const rsdColorDataRef = useRef({ densities: new Float32Array(0), smoothedDensities: new Float32Array(0), meanDensity: 0, analysisKey: '', size: 0 });
+            const rsdPausedLocalRef = useRef({ velocities: new Float32Array(0), densities: new Float32Array(0), smoothedDensities: new Float32Array(0), crossingAccum: new Float32Array(0), meanDensity: 0, analysisKey: '', size: 0 });
 
             const localDynamics = useRef({
                 offsets: new Float32Array(0),
@@ -814,6 +850,11 @@ https://github.com/nicosmo/cosmic_web_explorer
             const headRefB = useRef(new Int32Array(0));
             const nextRefB = useRef(new Int32Array(0));
             const posRefB = useRef({ x: new Float32Array(0), y: new Float32Array(0), size: 0 });
+            const rsdPosRefB = useRef({ x: new Float32Array(0), y: new Float32Array(0), size: 0 });
+            const rsdAnalysisPosRefB = useRef({ x: new Float32Array(0), y: new Float32Array(0), size: 0 });
+            const hybridVelocityRefB = useRef({ values: new Float32Array(0), size: 0 });
+            const rsdColorDataRefB = useRef({ densities: new Float32Array(0), smoothedDensities: new Float32Array(0), meanDensity: 0, analysisKey: '', size: 0 });
+            const rsdPausedLocalRefB = useRef({ velocities: new Float32Array(0), densities: new Float32Array(0), smoothedDensities: new Float32Array(0), crossingAccum: new Float32Array(0), meanDensity: 0, analysisKey: '', size: 0 });
 
             const localDynamicsB = useRef({
                 offsets: new Float32Array(0),
@@ -827,7 +868,7 @@ https://github.com/nicosmo/cosmic_web_explorer
             const voronoiDataRefB = useRef(null);
             const workerRefB = useRef(null);
             const isWorkerBusyB = useRef(false);
-            const lastCalcParamsRefB = useRef({ minVoidRadius: 10, voidThreshold: 1.0 });
+            const lastCalcParamsRefB = useRef({ minVoidRadius: 10, voidThreshold: 1.0, analysisKey: '' });
 
             // Arrays for WebGL data transfer (avoids reallocation)
             const webglDataRef = useRef({
@@ -974,6 +1015,13 @@ https://github.com/nicosmo/cosmic_web_explorer
                         size: tracersPerPanel
                     };
                 }
+                if (rsdPosRef.current.size !== tracersPerPanel) {
+                    rsdPosRef.current = {
+                        x: new Float32Array(tracersPerPanel),
+                        y: new Float32Array(tracersPerPanel),
+                        size: tracersPerPanel
+                    };
+                }
 
                 // Initialize WebGL transfer arrays size
                 webglDataRef.current = {
@@ -1001,6 +1049,13 @@ https://github.com/nicosmo/cosmic_web_explorer
                 };
                 if (posRefB.current.size !== tracersPerPanel) {
                     posRefB.current = {
+                        x: new Float32Array(tracersPerPanel),
+                        y: new Float32Array(tracersPerPanel),
+                        size: tracersPerPanel
+                    };
+                }
+                if (rsdPosRefB.current.size !== tracersPerPanel) {
+                    rsdPosRefB.current = {
                         x: new Float32Array(tracersPerPanel),
                         y: new Float32Array(tracersPerPanel),
                         size: tracersPerPanel
@@ -1207,6 +1262,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                 // so gas view doesn't show stale data from a previous run
                 if (localDynamics.current.smoothedDensities) localDynamics.current.smoothedDensities.fill(0);
                 if (localDynamics.current.crossingAccum) localDynamics.current.crossingAccum.fill(0);
+                hasPlaybackLocalVelRef.current = false;
                 voronoiDataRef.current = null;
                 if (trailHistory.current) {
                     for(let i=0; i<trailHistory.current.length; i++) {
@@ -1223,6 +1279,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                 localDynamicsB.current.densities.fill(0);
                 if (localDynamicsB.current.smoothedDensities) localDynamicsB.current.smoothedDensities.fill(0);
                 if (localDynamicsB.current.crossingAccum) localDynamicsB.current.crossingAccum.fill(0);
+                hasPlaybackLocalVelRefB.current = false;
                 voronoiDataRefB.current = null;
                 if (trailHistoryB.current) {
                     for(let i=0; i<trailHistoryB.current.length; i++) {
@@ -1246,10 +1303,14 @@ https://github.com/nicosmo/cosmic_web_explorer
                 if (!isPlaying && cosmicTime >= 1.0) {
                     simulationTimeRef.current = minT;
                     setCosmicTime(minT);
+                    setSpaceMode('real');
                     resetPhysics();
                     if (splitScreen) resetPhysicsB();
                     setRenderTrigger(t => t + 1);
                     return;
+                }
+                if (!isPlaying) {
+                    setSpaceMode('real');
                 }
                 setIsPlaying(!isPlaying);
             };
@@ -1258,6 +1319,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                 const minT = cosmologyLUT.minTime;
                 simulationTimeRef.current = minT;
                 setCosmicTime(minT);
+                setSpaceMode('real');
                 setIsPlaying(false);
                 resetPhysics();
                 if (splitScreen) resetPhysicsB();
@@ -1768,9 +1830,31 @@ https://github.com/nicosmo/cosmic_web_explorer
                 const rect = document.getElementById('app-container').getBoundingClientRect();
                 const x = e.clientX - rect.left - SIDEBAR_W;
                 const y = e.clientY - rect.top;
+
+                const getPanelPointer = (rawX, rawY, fixedPanel = null) => {
+                    let panel = fixedPanel;
+                    if (panel === null) {
+                        if (splitScreen) {
+                            if (rawX < 0 || rawY < 0 || rawY > SIM_H) return null;
+                            if (rawX < SIM_W) panel = 0;
+                            else if (rawX > SIM_W + DIVIDER_WIDTH) panel = 1;
+                            else return null; // divider area
+                        } else {
+                            panel = 0;
+                        }
+                    }
+                    const panelOffsetX = panel === 1 ? (SIM_W + DIVIDER_WIDTH) : 0;
+                    const localX = rawX - panelOffsetX;
+                    if (localX < 0 || localX > SIM_W || rawY < 0 || rawY > SIM_H) return null;
+                    return { panel, x: localX, y: rawY };
+                };
+
                 if (sculptActive) {
+                    const pointer = getPanelPointer(x, y, null);
+                    if (!pointer) return;
                     rulerRef.current.isSculpting = true;
-                    rulerRef.current.mouse = {x, y};
+                    rulerRef.current.sculptPanel = pointer.panel;
+                    rulerRef.current.mouse = { x: pointer.x, y: pointer.y };
                     return;
                 }
                 if(!rulerActive) return;
@@ -1795,7 +1879,12 @@ https://github.com/nicosmo/cosmic_web_explorer
                 const x = e.clientX - rect.left - SIDEBAR_W;
                 const y = e.clientY - rect.top;
                 if (sculptActive && rulerRef.current.isSculpting) {
-                    rulerRef.current.mouse = {x, y};
+                    const panel = rulerRef.current.sculptPanel;
+                    const panelOffsetX = panel === 1 ? (SIM_W + DIVIDER_WIDTH) : 0;
+                    const localX = x - panelOffsetX;
+                    if (localX >= 0 && localX <= SIM_W && y >= 0 && y <= SIM_H) {
+                        rulerRef.current.mouse = { x: localX, y };
+                    }
                     return;
                 }
                 if(!rulerActive || !rulerRef.current.start) return;
@@ -1805,6 +1894,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                 if (sculptActive) {
                     rulerRef.current.isSculpting = false;
                     rulerRef.current.mouse = null;
+                    rulerRef.current.sculptPanel = 0;
                 }
             };
 
@@ -1900,215 +1990,146 @@ https://github.com/nicosmo/cosmic_web_explorer
 
                     // --- Process each panel ---
                     for (let panelIdx = 0; panelIdx < panelCount; panelIdx++) {
-                    const isB = panelIdx === 1;
+                    const panelState = await processPanelPhysicsAndRSD({
+                        panelIdx,
+                        splitScreen,
+                        refZ,
+                        uiCanvasRef,
+                        uiCanvasRefB,
+                        webglCanvasRef,
+                        webglCanvasRefB,
+                        glRef,
+                        glRefB,
+                        programRef,
+                        programRefB,
+                        buffersRef,
+                        buffersRefB,
+                        webglDataRef,
+                        webglDataRefB,
+                        omegaM,
+                        omegaL,
+                        w0,
+                        wa,
+                        omegaMB,
+                        omegaLB,
+                        w0B,
+                        waB,
+                        cosmologyLUT,
+                        cosmologyLUTB,
+                        localDynamics,
+                        localDynamicsB,
+                        posRef,
+                        posRefB,
+                        rsdPosRef,
+                        rsdPosRefB,
+                        rsdAnalysisPosRef,
+                        rsdAnalysisPosRefB,
+                        hybridVelocityRef,
+                        hybridVelocityRefB,
+                        rsdColorDataRef,
+                        rsdColorDataRefB,
+                        rsdPausedLocalRef,
+                        rsdPausedLocalRefB,
+                        hasPlaybackLocalVelRef,
+                        hasPlaybackLocalVelRefB,
+                        headRef,
+                        headRefB,
+                        nextRef,
+                        nextRefB,
+                        trailHistory,
+                        trailHistoryB,
+                        voronoiDataRef,
+                        voronoiDataRefB,
+                        workerRef,
+                        workerRefB,
+                        isWorkerBusy,
+                        isWorkerBusyB,
+                        lastCalcParamsRef,
+                        lastCalcParamsRefB,
+                        tracerForces,
+                        tracerForcesB,
+                        tracerForces2,
+                        tracerForces2B,
+                        BAO_RADIUS_PX,
+                        BAO_RADIUS_PX_B,
+                        BAO_RADIUS_MPC,
+                        BAO_RADIUS_MPC_B,
+                        cosmoMode,
+                        cosmoModeB,
+                        simulationTimeRef,
+                        simDeltaT,
+                        sculptActive,
+                        rulerRef,
+                        enableLocalGravity,
+                        isPlaying,
+                        isRecordingRef,
+                        useGPU,
+                        gpuGravityRef,
+                        trailPercentage,
+                        initialTracers,
+                        useAdhesion,
+                        tracersPerPanel,
+                        SIM_W,
+                        SIM_H,
+                        spaceMode,
+                        rsdLos,
+                        rsdAmplitude,
+                        rsdAmplitudeSettled,
+                        pxPerMpc,
+                        isCancelled: () => cancelled,
+                        RAW_SCALE_UNIFIED,
+                        DISP_SCALE_FACTOR,
+                        REFERENCE_AGE_ZERO,
+                        HUBBLE_DRAG_BASE
+                    });
+                    if (panelState && panelState.cancelled) return;
+                    if (!panelState || panelState.skip) continue;
 
-                    // Select rendering contexts for this panel (shadow outer vars)
-                    const canvas = isB ? uiCanvasRefB.current : uiCanvasRef.current;
-                    const glCanvas = isB ? webglCanvasRefB.current : webglCanvasRef.current;
-                    const gl = isB ? glRefB.current : glRef.current;
-                    const program = isB ? programRefB.current : programRef.current;
-                    const panelBuffers = isB ? buffersRefB.current : buffersRef.current;
-                    const panelWebglData = isB ? webglDataRefB.current : webglDataRef.current;
-
-                    if (!canvas || !glCanvas || !gl || !program || !panelBuffers || !panelBuffers.position) continue;
-
-                    const ctx = canvas.getContext('2d');
-                    const cWidth = canvas.width;
-                    const cHeight = canvas.height;
-
-                    // Select cosmology for this panel
-                    const pOm = isB ? omegaMB : omegaM;
-                    const pOl = isB ? omegaLB : omegaL;
-                    const pW0 = isB ? w0B : w0;
-                    const pWa = isB ? waB : wa;
-                    const pLUT = isB ? (cosmologyLUTB || cosmologyLUT) : cosmologyLUT;
-
-                    // Select physics state for this panel
-                    const pLD = isB ? localDynamicsB.current : localDynamics.current;
-                    const pPosRef = isB ? posRefB : posRef;
-                    const pHeadRef = isB ? headRefB : headRef;
-                    const pNextRef = isB ? nextRefB : nextRef;
-                    const pTrailHistory = isB ? trailHistoryB.current : trailHistory.current;
-                    const pVoronoiDataRef = isB ? voronoiDataRefB : voronoiDataRef;
-                    const pWorkerRef = isB ? workerRefB : workerRef;
-                    const pIsWorkerBusy = isB ? isWorkerBusyB : isWorkerBusy;
-                    const pLastCalcParamsRef = isB ? lastCalcParamsRefB : lastCalcParamsRef;
-                    const pTracerForces = isB ? tracerForcesB : tracerForces;
-                    const pTracerForces2 = isB ? tracerForces2B : tracerForces2;
-                    const pBaoRadiusPx = isB ? BAO_RADIUS_PX_B : BAO_RADIUS_PX;
-                    const pBaoRadiusMpc = isB ? BAO_RADIUS_MPC_B : BAO_RADIUS_MPC;
-                    const pCosmoMode = isB ? cosmoModeB : cosmoMode;
-
-                    // Synchronized redshift: Panel B uses Panel A's z, mapped through its own LUT
-                    let currentZ, growthD;
-                    if (isB && splitScreen) {
-                        const result = getValuesAtRedshift(refZ, pLUT);
-                        currentZ = result.z;
-                        growthD = result.D;
-                    } else {
-                        const result = getValuesAtTime(simulationTimeRef.current, pLUT);
-                        currentZ = result.z;
-                        growthD = result.D;
-                    }
-
-                    // P(k) mode: use linear growth factor D(t) directly (no gamma boost).
-                    // The E&H transfer function + Abel projection now produce
-                    // well-calibrated 2D displacements at all FoV scales.
-
-                    // Both P(k) and hybrid-BAO modes now produce displacements
-                    // in the same physical-pixel convention → rawScale = 1/120 always.
-                    const rawScale = RAW_SCALE_UNIFIED;
-                    const densityFactor = Math.pow(pOm / 0.3, 0.6);
-                    const dispScale = growthD * DISP_SCALE_FACTOR * Math.min(1.0, rawScale) * densityFactor;
-                    // 2LPT: D_2(t) ~ -3/7 * D_1(t)^2  (Einstein-de Sitter approx.)
-                    const disp2Scale = (-3 / 7) * growthD * dispScale;
-
-                    const virialScale = 0.2 * growthD;
-                    const expansionRate = getHubbleFactor(currentZ, pOm, pOl, pW0, pWa);
-                    // Hubble drag: comoving EOM has friction term 2*H(z)*v
-                    // Physically: v *= exp(-2 * E(z) * ageZero * simDeltaT)
-                    // ageZero = H0*t0 maps normalized sim-time to Hubble units
-                    // The BASE constant is empirically calibrated above the
-                    // pure physical value to account for unresolved sub-grid
-                    // velocity dispersion damping (physical drag alone is too weak
-                    // for the ~500 time steps spanning z=10 to z=0 in our sim).
-                    // Cosmology scaling: ageZero varies ~30% (EdS 0.667 → LCDM 0.964)
-                    const ageZero = pLUT.ageZero || REFERENCE_AGE_ZERO;
-                    // Disable Hubble drag in sculpt mode: pure gravity + softening only
-                    const isSculpting = !isB && sculptActive && simulationTimeRef.current >= 0.99;
-                    const hubbleDrag = isSculpting ? 1.0 : Math.exp(-2.0 * expansionRate * HUBBLE_DRAG_BASE * (ageZero / REFERENCE_AGE_ZERO) * simDeltaT / REFERENCE_DT);
-
-                    let physX, physY;
-
-                    if (pLD.initialized) {
-                        const { offsets, velocities, gravityForces, prevGravForces, densities, smoothedDensities, crossingAccum } = pLD;
-                        const N = tracersPerPanel;
-
-                        const gpuGravity = gpuGravityRef.current;
-                        const willUseGPU = useGPU && gpuGravity && gpuGravity.available;
-                        // Density coloring always uses 3x3 (9 cells) for consistency in density between CPU & GPU
-                        const gp = computeGridParams(N, SIM_W, SIM_H, 9);
-                        const { cellSize, gridW, gridH, gridSize, meanDensity, densityThreshold } = gp;
-
-                        if (pHeadRef.current.length !== gridSize) pHeadRef.current = new Int32Array(gridSize);
-                        if (pNextRef.current.length !== N) pNextRef.current = new Int32Array(N);
-
-                        const head = pHeadRef.current;
-                        const next = pNextRef.current;
-
-                        physX = pPosRef.current.x;
-                        physY = pPosRef.current.y;
-
-                        const doPhysics = (isPlaying || isRecordingRef.current) && enableLocalGravity;
-
-                        // ============================================================
-                        // LEAPFROG KDK (Kick-Drift-Kick) integration
-                        // Step 1: Half-kick with PREVIOUS step's gravity forces
-                        // Step 2: Drift (integrate velocities into offsets)
-                        // Step 3: Update positions + build grid
-                        // Step 4: Compute gravity at new positions -> new forces
-                        // Step 5: Half-kick with NEW forces
-                        // ============================================================
-
-                        // STEP 1: HALF-KICK (previous forces)
-                        if (doPhysics) {
-                            applyHalfKick(velocities, gravityForces, N);
-                        }
-
-                        // STEP 2: DRIFT (drag + clamp + offset update)
-                        if (doPhysics) {
-                            integrateVelocities(velocities, offsets, hubbleDrag, N);
-                            pVoronoiDataRef.current = null;
-                        }
-
-                        // SCULPTING LOGIC (Panel A only)
-                        if (!isB && sculptActive && rulerRef.current.isSculpting && rulerRef.current.mouse && simulationTimeRef.current >= 0.99) {
-                            applySculpting(
-                                rulerRef.current.mouse.x, rulerRef.current.mouse.y, 150,
-                                N, initialTracers, pTracerForces, pTracerForces2, offsets, dispScale, disp2Scale, SIM_W, SIM_H
-                            );
-                            pVoronoiDataRef.current = null;
-                        }
-
-                        // STEP 3: UPDATE POSITIONS + BUILD GRID
-                        updatePositionsAndBuildGrid(
-                            N, initialTracers, pTracerForces, pTracerForces2, offsets, crossingAccum,
-                            dispScale, growthD, rawScale, densityFactor,
-                            SIM_W, SIM_H, physX, physY, cellSize, gridW, gridH, head, next,
-                            useAdhesion
-                        );
-
-                        // RECORD TRAILS
-                        if ((isPlaying || isRecordingRef.current) && (Date.now() % 50 < 20) && trailPercentage > 0) {
-                            recordTrails(N, initialTracers, physX, physY, virialScale, pTrailHistory, trailPercentage, SIM_W, SIM_H);
-                        }
-
-                        // STEP 4: COMPUTE GRAVITY -> new forces
-                        // G_eff = G_base * f(a) * (dt/dt_ref) * (N_ref/N)
-                        //   f(a) = Omega_m(a)^0.55: growth-rate scaling (Linder 2005, Cosmic Growth History and Expansion History: https://arxiv.org/pdf/astro-ph/0507263)
-                        //          encodes both matter density and dark energy suppression
-                        //          in a single physically-motivated factor
-                        //   dt scaling:  keeps total impulse constant across timestep choices
-                        //   N scaling:   mimics m = M_total/N (mass per tracer)
-                        const a_current = 1.0 / (1.0 + currentZ);
-                        const OmA = pOm * Math.pow(a_current, -3) / (expansionRate * expansionRate);
-                        const gravScale = Math.pow(OmA, 0.55);
-                        const effectiveGravity = GRAVITY_BASE_STRENGTH
-                            * gravScale
-                            * (simDeltaT / REFERENCE_DT)
-                            * (REFERENCE_TRACER_COUNT / N);
-                        let usedGPU = false;
-                        if (willUseGPU) {
-                            try {
-                                const isSyncMode = isRecordingRef.current || splitScreen;
-                                const gpuSearchRadius = 4;
-                                const gpuResult = await gpuGravity.compute(
-                                    physX, physY, pTracerForces, N,
-                                    {
-                                        simW: SIM_W, simH: SIM_H,
-                                        cellSize, gridW, gridH,
-                                        effectiveGravity,
-                                        doPhysics,
-                                        searchRadius: gpuSearchRadius,
-                                        maxDistSq: cellSize * cellSize * (gpuSearchRadius * gpuSearchRadius),
-                                        softeningLengthSq: SOFTENING_LENGTH_SQ,
-                                        shellCrossingRadiusSq: SHELL_CROSSING_RADIUS_SQ
-                                    },
-                                    isSyncMode
-                                );
-                                if (cancelled) return;
-                                if (gpuResult) {
-                                    processGPUGravityResult(gpuResult, N, densities, crossingAccum, gravityForces, densityThreshold, doPhysics, simDeltaT / REFERENCE_DT);
-                                    usedGPU = true;
-                                }
-                            } catch (e) {
-                                // GPU error -- fall through to CPU
-                            }
-                        }
-
-                        // CPU fallback
-                        if (!usedGPU) {
-                            computeCPUGravity(
-                                N, physX, physY, head, next, pTracerForces,
-                                gridW, gridH, cellSize, SIM_W, SIM_H,
-                                densities, crossingAccum, gravityForces,
-                                densityThreshold, effectiveGravity, doPhysics, simDeltaT / REFERENCE_DT
-                            );
-                        }
-
-                        // TEMPORAL SMOOTHING (density)
-                        smoothDensities(densities, smoothedDensities, N, isPlaying || isRecordingRef.current);
-
-                        // FORCE TEMPORAL SMOOTHING: average with previous step
-                        if (doPhysics) {
-                            smoothForces(gravityForces, prevGravForces, N);
-                        }
-
-                        // STEP 5: HALF-KICK (new forces)
-                        if (doPhysics) {
-                            applyHalfKick(velocities, gravityForces, N);
-                        }
-                    }
+                    const {
+                        isB,
+                        ctx,
+                        gl,
+                        program,
+                        panelBuffers,
+                        panelWebglData,
+                        cWidth,
+                        cHeight,
+                        pOm,
+                        pOl,
+                        pW0,
+                        pWa,
+                        pLUT,
+                        pLD,
+                        pTrailHistory,
+                        pVoronoiDataRef,
+                        pWorkerRef,
+                        pIsWorkerBusy,
+                        pLastCalcParamsRef,
+                        pTracerForces,
+                        pTracerForces2,
+                        pBaoRadiusPx,
+                        pBaoRadiusMpc,
+                        pCosmoMode,
+                        currentZ,
+                        growthD,
+                        rawScale,
+                        densityFactor,
+                        dispScale,
+                        disp2Scale,
+                        virialScale,
+                        expansionRate,
+                        activeSculptPanel,
+                        physX,
+                        drawX,
+                        drawY,
+                        analysisX,
+                        analysisY,
+                        colorDensities,
+                        colorSmoothedDensities,
+                        colorMeanDensity,
+                        hybridVelocities,
+                        rsdEnabled
+                    } = panelState;
 
                     // --- DRAWING: Clear this panel's canvases ---
                     gl.viewport(0, 0, cWidth, cHeight);
@@ -2146,12 +2167,8 @@ https://github.com/nicosmo/cosmic_web_explorer
                         ctx.restore();
                     }
 
-                    let pSmoothedDensities = null;
-                    let pMeanDensity = 0;
-
                     if (showTracers && physX) {
                         const { densities, smoothedDensities, crossingAccum: pCrossing, thermalPhases: pThermalPhases } = pLD;
-                        pSmoothedDensities = smoothedDensities;
                         const N = tracersPerPanel;
 
                         // Update resolution uniform for this panel's coordinate system
@@ -2159,14 +2176,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                         gl.uniform2f(resLoc, SIM_W, SIM_H);
 
                         // Density coloring always uses 3x3 (9 cells) for consistency
-                        const gridSide = Math.floor(Math.sqrt(N));
-                        const safeGridSide = Math.min(2000, Math.max(10, gridSide));
-                        const maxDim = Math.max(SIM_W, SIM_H);
-                        const cellSize = Math.max(2, maxDim / safeGridSide);
-                        const gridW = Math.ceil(SIM_W / cellSize);
-                        const gridH = Math.ceil(SIM_H / cellSize);
-                        const meanDensity = (tracersPerPanel / (gridW * gridH)) * 9;
-                        pMeanDensity = meanDensity;
+                        const meanDensity = colorMeanDensity;
 
                         const simW = SIM_W | 0;
                         const simH = SIM_H | 0;
@@ -2181,7 +2191,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                         // --- Thermal scatter: physically-modulated display-time offset ---
                         // Advance persistent phases and compute per-particle offsets
                         // Disabled in sculpt mode for clean gravity-only dynamics
-                        const isSculptingNow = !isB && sculptActive && simulationTimeRef.current >= 0.99;
+                        const isSculptingNow = sculptActive && simulationTimeRef.current >= 0.99 && panelIdx === activeSculptPanel;
                         if (!isSculptingNow) {
                             const thermalGrowthRate = Math.pow(
                                 pOm * Math.pow(1.0 + currentZ, 3) / Math.max(1e-6, expansionRate * expansionRate), 0.55
@@ -2201,8 +2211,8 @@ https://github.com/nicosmo/cosmic_web_explorer
 
                         // FILL BUFFERS
                         for (let i = 0; i < N; i++) {
-                            const coldPx = physX[i];
-                            const coldPy = physY[i];
+                            const coldPx = drawX[i];
+                            const coldPy = drawY[i];
                             // Read pre-computed thermal offset from phase array (packed after phases)
                             const thermalX = pThermalPhases[N + i * 2];
                             const thermalY = pThermalPhases[N + i * 2 + 1];
@@ -2213,7 +2223,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                             wbPositions[i*2+1] = py;
 
                             if (showGas) {
-                                const density = smoothedDensities[i] || 1;
+                                const density = colorSmoothedDensities[i] || 1;
                                 const ratio = density / (meanDensity || 1);
 
                                 let colIdx = (Math.pow(ratio, 0.75) * 100) | 0;
@@ -2231,7 +2241,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                 // Size
                                 wbSizes[i] = Math.max(0.5, dynamicBaseSize / Math.pow(ratio + 0.5, 0.6)) * 4.0; // Scale up for visual match
                             } else {
-                                const density = densities[i] || 1;
+                                const density = colorDensities[i] || 1;
                                 const ratio = density / (meanDensity || 1);
                                 let colIdx = (Math.pow(ratio, 0.75) * 100) | 0;
                                 if (colIdx >= COLOR_LUT_SIZE) colIdx = COLOR_LUT_SIZE - 1;
@@ -2287,21 +2297,23 @@ https://github.com/nicosmo/cosmic_web_explorer
                     ctx.save(); // for composite ops
 
                     // --- VORONOI / VOID RENDERING (VIA WORKER) ---
-                    if ((showVoronoi || showVoids) && physX && !isPlaying) {
+                    const rsdAnalysisKey = buildAnalysisSpaceKey(spaceMode, rsdLos, rsdAmplitudeSettled);
+                    if ((showVoronoi || showVoids) && analysisX && !isPlaying) {
                         const paramsChanged = (
                             pLastCalcParamsRef.current.minVoidRadius !== minVoidRadius ||
-                            pLastCalcParamsRef.current.voidThreshold !== voidThreshold
+                            pLastCalcParamsRef.current.voidThreshold !== voidThreshold ||
+                            pLastCalcParamsRef.current.analysisKey !== rsdAnalysisKey
                         );
 
                         if ((!pVoronoiDataRef.current || paramsChanged) && !pIsWorkerBusy.current && pWorkerRef.current) {
                             pIsWorkerBusy.current = true;
-                            pLastCalcParamsRef.current = { minVoidRadius, voidThreshold };
+                            pLastCalcParamsRef.current = { minVoidRadius, voidThreshold, analysisKey: rsdAnalysisKey };
 
                             const minVoidRadiusPx = minVoidRadius * pxPerMpc;
 
                             pWorkerRef.current.postMessage({
-                                physX: physX,
-                                physY: physY,
+                                physX: analysisX,
+                                physY: analysisY,
                                 N: tracersPerPanel,
                                 width: SIM_W,
                                 height: SIM_H,
@@ -2314,7 +2326,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                         const data = pVoronoiDataRef.current;
                         if (data) {
                             drawVoidOverlay(ctx, data, {
-                                tracersPerPanel, physX, physY, voidThreshold,
+                                tracersPerPanel, physX: analysisX, physY: analysisY, voidThreshold,
                                 showVoronoi, showVoids, SIM_W, SIM_H, voidCenterMode,
                                 dict: i18n[lang]
                             });
@@ -2330,9 +2342,9 @@ https://github.com/nicosmo/cosmic_web_explorer
                     }
 
                     drawTrails(ctx, {
-                        physX, physY, initialTracers, tracerForces: pTracerForces,
+                        physX: drawX, physY: drawY, initialTracers, tracerForces: pTracerForces,
                         tracerForces2: pTracerForces2,
-                        trailHistory: pTrailHistory, velocities: pLD.velocities,
+                        trailHistory: pTrailHistory, velocities: hybridVelocities,
                         tracersPerPanel, trailPercentage, trailMode,
                         SIM_W, SIM_H, virialScale, isPlaying, enableLocalGravity,
                         rawScale, densityFactor, dispScale, disp2Scale
@@ -2365,13 +2377,13 @@ https://github.com/nicosmo/cosmic_web_explorer
                     const pGpuCorrResult = isB ? gpuCorrResultRefB : gpuCorrResultRef;
                     const pGpuCorrInFlight = isB ? gpuCorrInFlightRefB : gpuCorrInFlightRef;
 
-                    if (showCorrelation && initMode !== 'pk' && physX && useGPU && gpuCorrelationRef.current && gpuCorrelationRef.current.available && !pGpuCorrInFlight.current) {
+                    if (showCorrelation && initMode !== 'pk' && analysisX && useGPU && gpuCorrelationRef.current && gpuCorrelationRef.current.available && !pGpuCorrInFlight.current) {
                         const corrBinSize = 8;
                         const corrMaxDist = pBaoRadiusPx * 1.7;
                         const corrNumBins = Math.ceil(corrMaxDist / corrBinSize);
                         pGpuCorrInFlight.current = true;
                         gpuCorrelationRef.current.compute(
-                            physX, physY, tracersPerPanel, corrCenters,
+                            analysisX, analysisY, tracersPerPanel, corrCenters,
                             corrBinSize, corrNumBins, corrMaxDist, SIM_W, SIM_H,
                             false  // always use explicit center list
                         ).then(result => {
@@ -2382,14 +2394,15 @@ https://github.com/nicosmo/cosmic_web_explorer
                         });
                     }
                     drawStatsChart(ctx, {
-                        showCorrelation, showVoidProfile, showDensityPDF, physX, physY, tracersPerPanel,
+                        showCorrelation, showVoidProfile, showDensityPDF, physX: analysisX, physY: analysisY, tracersPerPanel,
                         centers: corrCenters, pBaoRadiusPx, pBaoRadiusMpc, pxPerMpc, SIM_W, SIM_H,
                         voronoiData: pVoronoiDataRef.current, voidCenterMode, profileMode,
                         gpuCorrHistogram: (showCorrelation && useGPU) ? pGpuCorrResult.current : null,
                         gpuCorrNCenters: corrCenters ? corrCenters.length : 0,
                         initMode, panelBoxMpc, panelId: panelIdx,
-                        smoothedDensities: pSmoothedDensities, meanDensity: pMeanDensity,
-                        dict: i18n[lang]
+                        smoothedDensities: colorSmoothedDensities, meanDensity: colorMeanDensity,
+                        dict: i18n[lang],
+                        rsdActive: rsdEnabled
                     });
 
                     if (showVoids && pVoronoiDataRef.current && pVoronoiDataRef.current.voidResults) {
@@ -2420,7 +2433,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                     cancelled = true;
                     cancelAnimationFrame(animationFrameId);
                 };
-            }, [isPlaying, simDeltaT, omegaM, omegaL, w0, wa, showTracers, showGas, showDensity, showInitialOverlay, rulerActive, sculptActive, trailPercentage, trailMode, initialTracers, centers, tracerForces, tracerForcesB, tracerForces2, tracerForces2B, canvasSize, enableLocalGravity, numCircles, boxSizeMpc, BAO_RADIUS_MPC, BAO_RADIUS_MPC_B, BAO_RADIUS_PX_B, tracersPerPanel, isSidebarCollapsed, renderTrigger, cosmologyLUT, showCorrelation, showVoidProfile, showDensityPDF, showVoronoi, showVoids, voidThreshold, minVoidRadius, voidCenterMode, profileMode, splitScreen, omegaMB, omegaLB, w0B, waB, cosmologyLUTB, cosmoMode, cosmoModeB, initMode]);
+            }, [isPlaying, simDeltaT, omegaM, omegaL, w0, wa, showTracers, showGas, showDensity, showInitialOverlay, rulerActive, sculptActive, trailPercentage, trailMode, initialTracers, centers, tracerForces, tracerForcesB, tracerForces2, tracerForces2B, canvasSize, enableLocalGravity, numCircles, boxSizeMpc, BAO_RADIUS_MPC, BAO_RADIUS_MPC_B, BAO_RADIUS_PX_B, tracersPerPanel, isSidebarCollapsed, renderTrigger, cosmologyLUT, showCorrelation, showVoidProfile, showDensityPDF, showVoronoi, showVoids, voidThreshold, minVoidRadius, voidCenterMode, profileMode, splitScreen, omegaMB, omegaLB, w0B, waB, cosmologyLUTB, cosmoMode, cosmoModeB, initMode, spaceMode, rsdLos, rsdAmplitude, rsdAmplitudeSettled]);
 
             return (
                 <div id="app-container" className={`${rulerActive ? 'cursor-crosshair' : ''} ${sculptActive ? 'cursor-grab' : ''}`}
@@ -2822,6 +2835,7 @@ https://github.com/nicosmo/cosmic_web_explorer
                                             </div>
                                             <input aria-label={`${i18n[lang].darkEnergy} (Omega Lambda)`} aria-valuetext={omegaL.toFixed(2)} type="range" min="0" max={isFlat ? "0.99" : "1.0"} step="0.01" value={omegaL} onChange={handleOmegaLChange} className={`w-full ${isFlat ? 'accent-slate-500 cursor-not-allowed' : 'accent-purple-500'}`}/>
                                         </div>
+
                                     </div>
 
                                     {/* Split-Screen Comparison Toggle with Tooltip */}
@@ -2840,6 +2854,70 @@ https://github.com/nicosmo/cosmic_web_explorer
                                             <Columns size={14} /> {splitScreen ? i18n[lang].exitComparison : i18n[lang].compareCosmologies}
                                         </button>
                                     </TooltipWrapper>
+                                </div>
+
+                                <div className="space-y-3">
+                                    <div className="btn-group" role="group" aria-label={`${i18n[lang].realSpace} / ${i18n[lang].redshiftSpace}`}>
+                                        <TooltipWrapper text={i18n[lang].ttRealSpaceMode} className="flex-1">
+                                            <button
+                                                aria-pressed={spaceMode === 'real'}
+                                                className={`w-full ${spaceMode === 'real' ? 'active' : ''}`}
+                                                onClick={() => setSpaceMode('real')}
+                                            >
+                                                {i18n[lang].realSpace}
+                                            </button>
+                                        </TooltipWrapper>
+                                        <TooltipWrapper text={i18n[lang].ttRedshiftSpaceMode} className="flex-1">
+                                            <button
+                                                aria-pressed={spaceMode === 'redshift'}
+                                                className={`w-full ${spaceMode === 'redshift' ? 'active' : ''}`}
+                                                onClick={() => setSpaceMode('redshift')}
+                                            >
+                                                {i18n[lang].redshiftSpace}
+                                            </button>
+                                        </TooltipWrapper>
+                                    </div>
+
+                                    {spaceMode === 'redshift' && (
+                                        <>
+                                            <div className="space-y-1">
+                                                <span className="text-xs text-slate-400 block mb-1">{i18n[lang].lineOfSight}</span>
+                                                <div className="btn-group" role="group" aria-label={i18n[lang].lineOfSight}>
+                                                    <button
+                                                        aria-pressed={rsdLos === 'vertical'}
+                                                        className={rsdLos === 'vertical' ? 'active' : ''}
+                                                        onClick={() => setRsdLos('vertical')}
+                                                    >
+                                                        {i18n[lang].vertical}
+                                                    </button>
+                                                    <button
+                                                        aria-pressed={rsdLos === 'horizontal'}
+                                                        className={rsdLos === 'horizontal' ? 'active' : ''}
+                                                        onClick={() => setRsdLos('horizontal')}
+                                                    >
+                                                        {i18n[lang].horizontal}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div className="space-y-1">
+                                                <div className="flex justify-between text-xs">
+                                                    <span className="text-slate-400">{i18n[lang].rsdAmplitude}</span>
+                                                    <span className="text-slate-200">{rsdAmplitude.toFixed(2)}</span>
+                                                </div>
+                                                <input
+                                                    aria-label={i18n[lang].rsdAmplitude}
+                                                    aria-valuetext={rsdAmplitude.toFixed(2)}
+                                                    type="range"
+                                                    min="0.0"
+                                                    max="10"
+                                                    step="0.1"
+                                                    value={rsdAmplitude}
+                                                    onChange={(e) => setRsdAmplitude(parseFloat(e.target.value))}
+                                                    className="w-full accent-purple-500"
+                                                />
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
 
                                     {/* Panel B Cosmology Controls */}
@@ -3061,7 +3139,7 @@ https://github.com/nicosmo/cosmic_web_explorer
 
                                             <TooltipWrapper text={i18n[lang].ttSculpt}>
                                                 <button
-                                                    disabled={cosmicTime < 1.0}
+                                                    disabled={cosmicTime < 0.99}
                                                     onClick={() => setSculptActive(!sculptActive)}
                                                     className={`w-full py-2 rounded text-xs flex items-center justify-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed ${sculptActive ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
                                                 >
