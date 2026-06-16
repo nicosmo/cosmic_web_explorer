@@ -26,6 +26,7 @@ Die Entwicklung wird durch die Kombination der analytischen Lagrange-Störungsth
 > - *Wechselwirkungen & Kräfte:* Während die Hintergrundexpansion $H(z)$, der Wachstumsfaktor $D_1(z)$ und die Übertragungsfunktionen streng aus der 3D-Physik abgeleitet werden, finden Teilchenwechselwirkungen auf einer 2D-Ebene statt. Folglich wird durch die Verwendung einer 2D-$1/r$-Gravitationskraft die realistische Bildung dichter 3D-Halos zugunsten eines beschleunigten, visuell eindrucksvollen Netzwerks kosmischer Filamente geopfert.
 > - *Auflösungsgrenzen:* Eine geringe Tracer-Anzahl (20k – 200k) kann zu strukturellen Artefakten führen. Darüber hinaus werden lokale Gravitationskräfte künstlich abgeschnitten, um interaktive Bildraten aufrechtzuerhalten.
 > - *Phänomenologische Modelle:* Echte Gashydrodynamik fehlt. Die kollisionsfreie Dynamik wird über ein „Adhäsions“-Modell approximiert, um zu verhindern, dass Cluster visuell explodieren, und ein phänomenologisches Modell wird implementiert, um zu verhindern, dass Tracer zu einzelnen Punktmassen kollabieren.
+> - *Redshift Space:* Dient der visuellen Veranschaulichung von Tracern im Rotverschiebungsraum und ist nicht vollkommen genau. Das Geschwindigkeitsfeld in der Sichtlinie wird näherungsweise modelliert, um Verzerrungsmuster hervorzuheben. Daher sollte die angezeigte RSD-Amplitude qualitativ interpretiert werden und nicht als exakte Beobachtungsvorhersage.
 
 
 
@@ -80,6 +81,9 @@ Beiträge, Vorschläge für neue Funktionen und Fehlermeldungen sind herzlich wi
 * **Kosmologische Steuerelemente:** Passe kosmologische Parameter an, um deren Auswirkungen auf das Strukturwachstum sofort zu beobachten. Unterstützt standardmäßiges flaches/nicht-flaches $\Lambda\text{CDM}$, $w\text{CDM}$ und dynamische dunkle Energie ($w_0w_a\text{CDM}$ über die CPL-Parametrisierung).
 * **Zeitsteuerung:** Bewege die Zeit mit dem Zeitleisten-Schieberegler vorwärts und rückwärts durch die kosmische Geschichte (berechnet sofort 2LPT-Verschiebungen, keine lokale Gravitation) oder klicke auf "Start" für eine genauere Entwicklung.
 * **Split-Screen-Vergleich:** Führe zwei unabhängige Simulationen nebeneinander aus. Lege unterschiedliche kosmologische Parameter für Panel A und Panel B fest, während beide denselben Zufallsstartwert verwenden. Panel B synchronisiert sich mit der Rotverschiebung ($z$) von Panel A, um direkte visuelle Vergleiche der Strukturbildung im exakt gleichen Stadium der kosmischen Expansion zu ermöglichen.
+* **Rotverschiebungsraum:** Wechsele zwischen dem realen Raum und dem Rotverschiebungsraum, um Tracer entlang einer wählbaren Sichtlinie aufgrund einer Dopplerverschiebung durch ihre eigene Bewegung unter Verwendung modellierter Eigenbewegungen zu verschieben. Die Stärke der Verzerrungen im Rotverschiebungsraum (RSD) ist einstellbar, um einen direkten visuellen Vergleich der anisotropen Clusterbildung zu ermöglichen.
+
+
 
 ### Visualisierungsmodi
 * **Tracer & Spuren:** Zeigt die Standardverteilung der Massenteilchen (Tracer) an. Wechsel zwischen den Modi **Frühere Pfade** (frühere Trajektorien) und **Geschwindigkeitsvektoren** (überhöhte aktuelle Geschwindigkeit), um Massenbewegungen zu visualisieren.
@@ -133,26 +137,36 @@ Um Cross-Origin-Sicherheitsbeschränkungen (CORS) des Browsers beim Laden von We
 
 ```text
 cosmic_web_explorer/
-├── index.html              # Haupt-HTML-Datei mit der React-Benutzeroberfläche
+├── index.html              # Main HTML containing the React UI
 ├── styles.css              # Application styling
-├── Examples/               # Demo-Videos und Bilder aus der Galerie
+├── .github/
+│   └── workflows/
+│       └── smoke.yml         # CI startup smoke test
+├── docs/                   # Translations
+├── Examples/               # Demo videos and gallery images
+├── tests/
+│   └── smoke.spec.js         # Playwright startup/mount smoke coverage
 ├── src/
-│   ├── constants.js          # Kosmologische Parameter (Planck 2018)
-│   ├── cosmology.js          # Entwicklungsgeschichte und LUTs für Wachstumsfaktoren
-│   ├── transfer-function.js  # Eisenstein & Hu P(k) transfer Funktionen
+│   ├── constants.js          # Cosmological parameters (Planck 2018)
+│   ├── cosmology.js          # Expansion history & growth factor LUTs
+│   ├── transfer-function.js  # Eisenstein & Hu P(k) transfer functions
 │   ├── pert2lpt.js           # 2LPT displacement via 2D FFT
-│   ├── sim-physics.js        # Leapfrog KDK Iintegration & Adhesionsmodell
-│   ├── bao-forces.js         # Idealisierte BAO-Initialisierungslogik
+│   ├── sim-physics.js        # Core Leapfrog KDK integration & Adhesion model
+│   ├── redshift-space.js     # Redshift-space LOS shifting & hybrid velocity logic
+│   ├── analysis-keys.js      # Shared cache key/signature helpers for analysis spaces
+│   ├── panel-render-loop.js  # Extracted per-panel physics and RSD update pipeline
+│   ├── startup-guard.js      # Startup preflight checks and global fatal-error fallback
+│   ├── bao-forces.js         # Sculpted BAO initialization logic
 │   ├── gpu-gravity.js        # WebGPU N-body compute shader
 │   ├── gpu-correlation.js    # WebGPU pair-counting compute shader
-│   ├── sim-renderer.js       # Zeichenlogik von Canvas2D für Overlays und Diagramme
-│   ├── webgl-utils.js        # WebGL rendering für Tracer & Gas
-│   ├── color-luts.js         # Farbtabellen für Dichte/Temperatur
-│   ├── recorder.js           # Video-Encoder mit mehreren Pipelines
-│   ├── ui-components.js      # Wiederverwendbare React-UI-Elemente (Tooltips)
+│   ├── sim-renderer.js       # Canvas2D drawing logic for overlays & charts
+│   ├── webgl-utils.js        # WebGL rendering for tracers & gas
+│   ├── color-luts.js         # Color maps for density/temperature
+│   ├── recorder.js           # Multi-pipeline video encoder
+│   ├── ui-components.js      # Reusable React UI elements (Tooltips)
 │   └── icons.js              # SVG Icons
 └── workers/
-    └── void-worker.js        # Hintergrund-Voiderkennung (Delaunay/Watershed)
+    └── void-worker.js        # Background void finding (Delaunay/Watershed)
 ```
 
 ---
@@ -258,6 +272,32 @@ $$
 
 wobei $C_{\mathrm{drag}} = 0,25$ empirisch über dem rein physikalischen Wert kalibriert wurde, um die Dämpfung der nicht aufgelösten Geschwindigkeitsdispersion unterhalb der Gittergröße zu berücksichtigen.
 
+Um beobachtete Verzerrungen im Rotverschiebungsraum (RSD) nachzubilden, wenden wir eine Verschiebung entlang der Sichtlinie (LOS) unter Verwendung eines phänomenologischen hybriden Geschwindigkeitsfeldes an. Die lokale Dichte bestimmt, inwieweit jeder Tracer perturbative (großräumige) bzw. lokale (nichtlineare) Geschwindigkeitsinformationen nutzt:
+
+$$
+\mathbf{v}_{\mathrm{hyb}}=(1-w_\rho)\,\mathbf{v}_{\mathrm{PT}}+w_\rho\,\mathbf{v}_{\mathrm{local}}.
+$$
+
+$$
+w_\rho = w_{\min} + (w_{\max}-w_{\min})\,s\!\left(\rho/\bar{\rho}\right),
+\qquad
+w_{\min}=0.15,\; w_{\max}=0.85,
+$$
+
+wobei $s$ als glatte, dichteabhängige Übergangsfunktion von einer PT-Gewichtung bei niedriger Dichte ($\rho/\bar{\rho}\le 0,5$) zu einer lokalen Geschwindigkeitsgewichtung bei hoher Dichte ($\rho/\bar{\rho}\ge 5,0$) gewählt wird.
+
+Die Abbildung in den Rotverschiebungsraum lautet dann:
+
+$$
+\mathbf{x}_{\mathrm{RSD}}=\mathbf{x}_{\mathrm{real}}+
+A_{\mathrm{RSD}}\,
+\frac{h\,(\mathrm{pxPerMpc})\,v_{\parallel,\mathrm{hyb}}}{a\,E(z)}\,\hat{\mathbf{n}},
+$$
+
+wobei $A_{\mathrm{RSD}}$ die vom Benutzer gesteuerte Amplitude, $\hat{\mathbf{n}}$ der LOS-Einheitsvektor und $E(z)=H(z)/H_0$ ist.
+
+Wird der manuelle Zeitschieberegler im Pausenmodus bewegt, werden die lokalen Geschwindigkeiten an festen Positionen kurzzeitig neu geschätzt, um die Kontinuität der RSD-Ansicht zu gewährleisten.
+
 
 ### 4. Implementation: CPU vs. WebGPU
 
@@ -327,7 +367,7 @@ $$
 * **Code-Generierung:** Google Gemini Pro 3.0/3.1 und Claude Opus 4.5/4.6
 * **Kernbibliotheken:** Die Visualisierung zur Erkennung von Voids stützt sich stark auf die hervorragende Bibliothek [d3-delaunay](https://github.com/d3/d3-delaunay) für computergestützte Geometrie.
 
-Die Autoren dieses Codes danken Julien Zoubian und Dennis Frei für ihre wertvollen Beiträge zur Entwicklung des Codes sowie Julian Bautista, Marie-Claude Cousinou, Steffen Hagstotz, Nico Hamaus, Geray Karademir, Arnaud de Mattia, Alice Pisani und Pauline Zarrouk für nützliche Diskussionen und Rückmeldungen. NS wird durch den Investitionsplan „France 2030“ der französischen Regierung (A*MIDEX AMX-22-CEI-03) unterstützt.
+Die Autoren dieses Codes danken Julien Zoubian und Dennis Frei für ihre wertvollen Beiträge zur Entwicklung des Codes sowie Julian Bautista, Marie-Claude Cousinou, Steffen Hagstotz, Nico Hamaus, Geray Karademir, Arnaud de Mattia, Alice Pisani, Benjamin Racine, und Pauline Zarrouk für nützliche Diskussionen und Rückmeldungen. NS wird durch den Investitionsplan „France 2030“ der französischen Regierung (A*MIDEX AMX-22-CEI-03) unterstützt.
 
 
 ## Quellenangabe
