@@ -261,7 +261,7 @@ $$
 \mathbf{F}_{ij} = G_{\mathrm{eff}} \cdot \frac{\mathbf{d}_{ij}}{|\mathbf{d}_{ij}|^2 + \varepsilon^2}
 $$
 
-Die Kopplungskonstante $G_{\mathrm{eff}}$ skaliert heuristisch mit der dimensionslosen linearen Wachstumsrate $f(a) \approx \Omega_m(a)^{0,55}$ ([Linder 2005](https://ui.adsabs.harvard.edu/abs/2005PhRvD.. 72d3529L/abstract)), um sicherzustellen, dass die Clusterbildung optisch ausbleibt, sobald die Dunkle Energie dominiert:
+Die Kopplungskonstante $G_{\mathrm{eff}}$ skaliert heuristisch mit der dimensionslosen linearen Wachstumsrate $f(a) \approx \Omega_m(a)^{0,55}$ ([Linder 2005](https://ui.adsabs.harvard.edu/abs/2005PhRvD..72d3529L/abstract)), um sicherzustellen, dass die Clusterbildung optisch ausbleibt, sobald die Dunkle Energie dominiert:
 $$G_{\mathrm{eff}} = G_{\mathrm{base}} \cdot \Omega_m(a)^{0.55} \cdot \frac{\Delta t}{\Delta t_{\mathrm{ref}}} \cdot \frac{N_{\mathrm{ref}}}{N}$$
 
 Die Integration erfolgt über ein Leapfrog-KDK-Verfahren (Kick-Drift-Kick). Der während des Drift-Schritts angewandte mitbewegte Reibungsterm lautet:
@@ -275,14 +275,15 @@ wobei $C_{\mathrm{drag}} = 0,25$ empirisch über dem rein physikalischen Wert ka
 Um beobachtete Verzerrungen im Rotverschiebungsraum (RSD) nachzubilden, wenden wir eine Verschiebung entlang der Sichtlinie (LOS) unter Verwendung eines phänomenologischen hybriden Geschwindigkeitsfeldes an. Die lokale Dichte bestimmt, inwieweit jeder Tracer perturbative (großräumige) bzw. lokale (nichtlineare) Geschwindigkeitsinformationen nutzt:
 
 $$
-\mathbf{v}_{\mathrm{hyb}}=(1-w_\rho)\,\mathbf{v}_{\mathrm{PT}}+w_\rho\,\mathbf{v}_{\mathrm{local}}.
+\mathbf{v}_{\mathrm{hyb}}= (1-w_\rho)  \mathbf{v}_{\mathrm{PT}}+w_\rho   \mathbf{v}_{\mathrm{local}}.
 $$
 
 $$
-w_\rho = w_{\min} + (w_{\max}-w_{\min})\,s\!\left(\rho/\bar{\rho}\right),
+w_\rho = w_{\min} + (w_{\max}-w_{\min}) s  \left(\rho/\bar{\rho}\right),
 \qquad
-w_{\min}=0.15,\; w_{\max}=0.85,
+w_{\min}=0.15 ; w_{\max}=0.85,
 $$
+
 
 wobei $s$ als glatte, dichteabhängige Übergangsfunktion von einer PT-Gewichtung bei niedriger Dichte ($\rho/\bar{\rho}\le 0,5$) zu einer lokalen Geschwindigkeitsgewichtung bei hoher Dichte ($\rho/\bar{\rho}\ge 5,0$) gewählt wird.
 
@@ -290,14 +291,13 @@ Die Abbildung in den Rotverschiebungsraum lautet dann:
 
 $$
 \mathbf{x}_{\mathrm{RSD}}=\mathbf{x}_{\mathrm{real}}+
-A_{\mathrm{RSD}}\,
-\frac{h\,(\mathrm{pxPerMpc})\,v_{\parallel,\mathrm{hyb}}}{a\,E(z)}\,\hat{\mathbf{n}},
+A_{\mathrm{RSD}} 
+\frac{h  (\mathrm{pxPerMpc})  v_{\parallel \mathrm{hyb}}}{a E(z)} \hat{\mathbf{n}},
 $$
 
 wobei $A_{\mathrm{RSD}}$ die vom Benutzer gesteuerte Amplitude, $\hat{\mathbf{n}}$ der LOS-Einheitsvektor und $E(z)=H(z)/H_0$ ist.
 
 Wird der manuelle Zeitschieberegler im Pausenmodus bewegt, werden die lokalen Geschwindigkeiten an festen Positionen kurzzeitig neu geschätzt, um die Kontinuität der RSD-Ansicht zu gewährleisten.
-
 
 ### 4. Implementation: CPU vs. WebGPU
 
