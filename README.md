@@ -276,13 +276,13 @@ where $C_{\mathrm{drag}} = 0.25$ is empirically calibrated above the pure physic
 To emulate observational redshift-space distortions (RSD), we apply a line-of-sight (LOS) displacement using a phenomenological hybrid velocity field. The local density controls how strongly each tracer uses perturbative (large-scale) versus local (nonlinear) velocity information:
 
 $$
-\mathbf{v}_{\mathrm{hyb}}=(1-w_\rho)\,\mathbf{v}_{\mathrm{PT}}+w_\rho\,\mathbf{v}_{\mathrm{local}}.
+\mathbf{v}_{\mathrm{hyb}}= (1-w_\rho)  \mathbf{v}_{\mathrm{PT}}+w_\rho   \mathbf{v}_{\mathrm{local}}.
 $$
 
 $$
-w_\rho = w_{\min} + (w_{\max}-w_{\min})\,s\!\left(\rho/\bar{\rho}\right),
+w_\rho = w_{\min} + (w_{\max}-w_{\min}) s  \left(\rho/\bar{\rho}\right),
 \qquad
-w_{\min}=0.15,\; w_{\max}=0.85,
+w_{\min}=0.15 ; w_{\max}=0.85,
 $$
 
 with $s$ chosen as a smooth density-dependent ramp from PT weighting at low density ($\rho/\bar{\rho}\le 0.5$) to local-velocity weighting at high density ($\rho/\bar{\rho}\ge 5.0$).
@@ -291,8 +291,8 @@ The redshift-space mapping is then:
 
 $$
 \mathbf{x}_{\mathrm{RSD}}=\mathbf{x}_{\mathrm{real}}+
-A_{\mathrm{RSD}}\,
-\frac{h\,(\mathrm{pxPerMpc})\,v_{\parallel,\mathrm{hyb}}}{a\,E(z)}\,\hat{\mathbf{n}},
+A_{\mathrm{RSD}} 
+\frac{h  (\mathrm{pxPerMpc})  v_{\parallel \mathrm{hyb}}}{a E(z)} \hat{\mathbf{n}},
 $$
 
 with $A_{\mathrm{RSD}}$ the user-controlled amplitude, $\hat{\mathbf{n}}$ the LOS unit vector, and $E(z)=H(z)/H_0$.
