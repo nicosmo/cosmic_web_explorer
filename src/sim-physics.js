@@ -321,6 +321,121 @@ function smoothDensities(densities, smoothedDensities, N, isActive) {
 }
 
 /**
+ * Recompute local 3x3-cell densities from an existing position field.
+ * This mirrors the coloring density logic used by the main real-space pass,
+ * but avoids mutating the simulation state or applying forces.
+ */
+function computeColorDensitiesFromPositions(N, physX, physY, SIM_W, SIM_H, tracerForces, outDensities, outMeanDensity) {
+    const gp = computeGridParams(N, SIM_W, SIM_H, 9);
+    const { cellSize, gridW, gridH, gridSize, meanDensity, densityThreshold } = gp;
+
+    const head = new Int32Array(gridSize).fill(-1);
+    const next = new Int32Array(N);
+    for (let i = 0; i < N; i++) {
+        const gx = Math.floor(physX[i] / cellSize);
+        const gy = Math.floor(physY[i] / cellSize);
+        if (gx >= 0 && gx < gridW && gy >= 0 && gy < gridH) {
+            const cellIdx = gy * gridW + gx;
+            next[i] = head[cellIdx];
+            head[cellIdx] = i;
+        } else {
+            next[i] = -1;
+        }
+    }
+
+    const dummyCrossing = new Float32Array(N);
+    const dummyForces = new Float32Array(N * 2);
+    computeCPUGravity(
+        N, physX, physY, head, next, tracerForces,
+        gridW, gridH, cellSize, SIM_W, SIM_H,
+        outDensities, dummyCrossing, dummyForces,
+        densityThreshold, 0, false, 1.0
+    );
+
+    return meanDensity;
+}
+
+/**
+ * Estimate local peculiar velocities at fixed positions.
+ *
+ * This runs several force->velocity updates while keeping particle positions
+ * frozen, so RSD can use a local velocity field after manual slider moves
+ * without drifting the simulation state.
+ */
+function estimateFrozenLocalVelocities(opts) {
+    const {
+        N,
+        physX,
+        physY,
+        tracerForces,
+        SIM_W,
+        SIM_H,
+        effectiveGravity,
+        hubbleDrag,
+        iterations,
+        outVelocities,
+        outDensities,
+        outSmoothedDensities,
+        outCrossingAccum
+    } = opts;
+
+    const gp = computeGridParams(N, SIM_W, SIM_H, 9);
+    const { cellSize, gridW, gridH, gridSize, meanDensity, densityThreshold } = gp;
+
+    const head = new Int32Array(gridSize).fill(-1);
+    const next = new Int32Array(N);
+    for (let i = 0; i < N; i++) {
+        const gx = Math.floor(physX[i] / cellSize);
+        const gy = Math.floor(physY[i] / cellSize);
+        if (gx >= 0 && gx < gridW && gy >= 0 && gy < gridH) {
+            const cellIdx = gy * gridW + gx;
+            next[i] = head[cellIdx];
+            head[cellIdx] = i;
+        } else {
+            next[i] = -1;
+        }
+    }
+
+    outVelocities.fill(0);
+    outDensities.fill(0);
+    outSmoothedDensities.fill(0);
+    outCrossingAccum.fill(0);
+
+    const gravForces = new Float32Array(N * 2);
+    const prevGravForces = new Float32Array(N * 2);
+    const stepCount = Math.max(1, iterations | 0);
+
+    for (let step = 0; step < stepCount; step++) {
+        computeCPUGravity(
+            N, physX, physY, head, next, tracerForces,
+            gridW, gridH, cellSize, SIM_W, SIM_H,
+            outDensities, outCrossingAccum, gravForces,
+            densityThreshold, effectiveGravity, true, 1.0
+        );
+
+        if (step > 0) {
+            smoothForces(gravForces, prevGravForces, N);
+        }
+
+        applyHalfKick(outVelocities, gravForces, N);
+
+        for (let i = 0; i < N; i++) {
+            let vx = outVelocities[i * 2] * hubbleDrag;
+            let vy = outVelocities[i * 2 + 1] * hubbleDrag;
+            if (!isFinite(vx)) vx = 0;
+            if (!isFinite(vy)) vy = 0;
+            vx = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, vx));
+            vy = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, vy));
+            outVelocities[i * 2] = vx;
+            outVelocities[i * 2 + 1] = vy;
+        }
+    }
+
+    outSmoothedDensities.set(outDensities);
+    return meanDensity;
+}
+
+/**
  * Integrate velocities (leapfrog drift step with Hubble drag and clamping).
  * Called between the two half-kicks.
  * Includes NaN/Infinity guard: non-finite velocities are zeroed.

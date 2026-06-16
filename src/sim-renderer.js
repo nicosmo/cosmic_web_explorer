@@ -192,25 +192,17 @@ function drawTrails(ctx, opts) {
         const MAX_VEC_LEN = 30; // pixels
         let maxMag = 0;
         for (let k = 0; k < visibleCount; k++) {
-            let vx = velocities[k * 2];
-            let vy = velocities[k * 2 + 1];
-            if (Math.abs(vx) < 0.001 && Math.abs(vy) < 0.001) {
-                vx = tracerForces[k * 2] * 3.0;
-                vy = tracerForces[k * 2 + 1] * 3.0;
-            }
+            const vx = velocities[k * 2];
+            const vy = velocities[k * 2 + 1];
             const mag = Math.sqrt(vx * vx + vy * vy);
             if (mag > maxMag) maxMag = mag;
         }
         const vecScale = maxMag > 0 ? MAX_VEC_LEN / maxMag : 1;
         for (let k = 0; k < visibleCount; k++) {
-            let px = physX[k];
-            let py = physY[k];
-            let vx = velocities[k * 2];
-            let vy = velocities[k * 2 + 1];
-            if (Math.abs(vx) < 0.001 && Math.abs(vy) < 0.001) {
-                vx = tracerForces[k * 2] * 3.0;
-                vy = tracerForces[k * 2 + 1] * 3.0;
-            }
+            const px = physX[k];
+            const py = physY[k];
+            const vx = velocities[k * 2];
+            const vy = velocities[k * 2 + 1];
             const tipX = px + vx * vecScale;
             const tipY = py + vy * vecScale;
             ctx.moveTo(px, py);
@@ -905,7 +897,7 @@ function drawStatsChart(ctx, opts) {
     const { showCorrelation, showVoidProfile, showDensityPDF, physX, physY, tracersPerPanel,
             centers, pBaoRadiusPx, pBaoRadiusMpc, pxPerMpc, SIM_W, SIM_H,
             voronoiData, voidCenterMode, profileMode, gpuCorrHistogram, gpuCorrNCenters,
-            initMode, panelBoxMpc, panelId, smoothedDensities, meanDensity, dict } = opts;
+            initMode, panelBoxMpc, panelId, smoothedDensities, meanDensity, dict, rsdActive } = opts;
     const d = dict || {};
 
     if (!showCorrelation && !showVoidProfile && !showDensityPDF) return;
@@ -1065,7 +1057,7 @@ function drawStatsChart(ctx, opts) {
         ctx.fillStyle = '#94a3b8';
         ctx.font = 'bold 14px Inter';
         ctx.textAlign = 'right';
-        ctx.fillText(d.normDensityDist, plotX + plotW - 5, plotY + 18);
+        ctx.fillText(rsdActive ? (d.normDensityDistRsd || d.normDensityDist) : d.normDensityDist, plotX + plotW - 5, plotY + 18);
 
         return;
     }
@@ -1128,7 +1120,7 @@ function drawStatsChart(ctx, opts) {
         // --- P(k) mode: Measured Power Spectrum via FFT ---
         pkData = computePowerSpectrum(physX, physY, tracersPerPanel, SIM_W, SIM_H, pxPerMpc, panelId);
         isPkChart = true;
-        title = d.powerSpectrum;
+        title = rsdActive ? (d.powerSpectrumRsd || d.powerSpectrum) : d.powerSpectrum;
     } else if (showCorrelation) {
         // --- BAO mode: Pair-counting ξ(r) ---
         // Full range [0, 1.5]×R_bao with search to 1.7×R_bao
@@ -1206,7 +1198,7 @@ function drawStatsChart(ctx, opts) {
 
         plotYMin = 0;
         plotYMax = maxVal;
-        title = d.twoPtCorrChart;
+        title = rsdActive ? (d.twoPtCorrChartRsd || d.twoPtCorrChart) : d.twoPtCorrChart;
         xLabel = d.distanceMpc;
         xMaxLabel = Math.round(plotMaxDist / pxPerMpc);
         showBAOLine = true;
@@ -1306,13 +1298,13 @@ function drawStatsChart(ctx, opts) {
                 counts[b] = col.length > 0 ? col[mid] : 0;
                 if (counts[b] > maxVal) maxVal = counts[b];
             }
-            title = d.medianVoidProfile;
+            title = rsdActive ? (d.medianVoidProfileRsd || d.medianVoidProfile) : d.medianVoidProfile;
         } else {
             for (let b = 0; b < numBins; b++) {
                 counts[b] = stackedExpected[b] > 0 ? stackedCounts[b] / stackedExpected[b] : 0;
                 if (counts[b] > maxVal) maxVal = counts[b];
             }
-            title = d.stackedVoidProfile;
+            title = rsdActive ? (d.stackedVoidProfileRsd || d.stackedVoidProfile) : d.stackedVoidProfile;
         }
 
         plotYMax = maxVal * 1.15;
